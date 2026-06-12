@@ -70,7 +70,7 @@ pub enum LayoutNode {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotifyKind {
     Attention,
@@ -80,14 +80,14 @@ pub enum NotifyKind {
     Idle,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PaneNotification {
     pub kind: NotifyKind,
     pub title: Option<String>,
     pub body: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PaneMeta {
     pub cwd: Option<String>,
     pub git_branch: Option<String>,

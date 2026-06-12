@@ -9,8 +9,18 @@
   import { openUrl } from "@tauri-apps/plugin-opener";
   import "@xterm/xterm/css/xterm.css";
   import { writePane, resizePane, subscribePane, type PaneId } from "./ipc";
+  import { handleKey } from "./keymap";
 
-  let { pane, focused = true }: { pane: PaneId; focused?: boolean } = $props();
+  export interface MenuAction {
+    label: string;
+    run: () => void;
+  }
+
+  let {
+    pane,
+    focused = true,
+    extraActions = [],
+  }: { pane: PaneId; focused?: boolean; extraActions?: MenuAction[] } = $props();
 
   let host: HTMLDivElement;
   let menu = $state<{ x: number; y: number } | null>(null);
@@ -33,6 +43,9 @@
         if (e.ctrlKey) void openUrl(uri);
       }),
     );
+    // App shortcuts (split/navigate/...) win over the terminal; everything
+    // else (Ctrl+C, Tab, F-keys...) flows through to the shell untouched.
+    term.attachCustomKeyEventHandler((e) => !handleKey(e));
     term.open(host);
     try {
       const webgl = new WebglAddon();
@@ -111,6 +124,17 @@
     <button onclick={() => menuAction("paste")}>붙여넣기</button>
     <button onclick={() => menuAction("selectAll")}>모두 선택</button>
     <button onclick={() => menuAction("clear")}>화면 지우기</button>
+    {#if extraActions.length > 0}
+      <hr />
+      {#each extraActions as action (action.label)}
+        <button
+          onclick={() => {
+            menu = null;
+            action.run();
+          }}>{action.label}</button
+        >
+      {/each}
+    {/if}
   </div>
 {/if}
 
@@ -148,5 +172,10 @@
   .ctx-menu button:disabled {
     opacity: 0.4;
     cursor: default;
+  }
+  .ctx-menu hr {
+    margin: 0.25rem 0.5rem;
+    border: none;
+    border-top: 1px solid #3b4261;
   }
 </style>

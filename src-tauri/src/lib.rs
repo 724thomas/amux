@@ -21,13 +21,26 @@ pub fn run() {
         .manage(Arc::clone(&engine))
         .invoke_handler(tauri::generate_handler![
             commands::get_snapshot,
-            commands::create_pane,
+            commands::create_workspace,
+            commands::close_workspace,
+            commands::focus_workspace,
+            commands::rename_workspace,
+            commands::move_workspace,
+            commands::set_ratio,
+            commands::split_pane,
+            commands::focus_pane,
             commands::write_pane,
             commands::resize_pane,
             commands::close_pane,
             commands::pane_subscribe,
         ])
         .setup(move |app| {
+            engine.start_meta_sweeper();
+            // Initial workspace lives engine-side so webview reloads can't
+            // race a duplicate into existence. The first resize fixes 80x24.
+            if let Err(e) = engine.create_workspace(None, None, 80, 24) {
+                tracing::error!("initial workspace: {e}");
+            }
             // Forward engine state changes to the webview as fresh snapshots.
             let handle = app.handle().clone();
             let engine = Arc::clone(&engine);

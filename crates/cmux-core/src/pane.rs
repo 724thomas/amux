@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use cmux_protocol::{env_keys, PaneId, WorkspaceId};
+use cmux_protocol::{env_keys, PaneId, PaneMeta, WorkspaceId};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
@@ -33,6 +33,9 @@ pub struct Pane {
     sink: Arc<Mutex<Option<OutputSink>>>,
     tail: Arc<Mutex<Vec<u8>>>,
     exited: Arc<AtomicBool>,
+    /// Root PID of the spawned shell (for the metadata sweeper's process walk).
+    child_pid: Option<u32>,
+    pub meta: Mutex<PaneMeta>,
 }
 
 impl Pane {
@@ -71,6 +74,7 @@ impl Pane {
         drop(pty.slave);
 
         let killer = child.clone_killer();
+        let child_pid = child.process_id();
         let mut reader = pty.master.try_clone_reader()?;
         let writer = pty.master.take_writer()?;
 
@@ -84,6 +88,8 @@ impl Pane {
             sink: Arc::new(Mutex::new(None)),
             tail: Arc::new(Mutex::new(Vec::new())),
             exited: Arc::new(AtomicBool::new(false)),
+            child_pid,
+            meta: Mutex::new(PaneMeta::default()),
         });
 
         // Reader thread: PTY → term state → tail buffer → sink.
@@ -171,9 +177,14 @@ impl Pane {
         self.exited.load(Ordering::SeqCst)
     }
 
-    /// PID of the shell (session leader) — used by the metadata sweeper.
+    /// PID of the foreground process group leader (what runs in the pane now).
     pub fn shell_pid(&self) -> Option<u32> {
         self.master.lock().process_group_leader().map(|p| p as u32)
+    }
+
+    /// Root PID of the shell process spawned at pane creation.
+    pub fn child_pid(&self) -> Option<u32> {
+        self.child_pid
     }
 
     pub fn kill(&self) {

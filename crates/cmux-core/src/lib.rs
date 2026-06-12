@@ -16,6 +16,8 @@
 //! - `persist`    — session save/restore (M5)
 
 pub mod engine;
+pub mod layout;
+pub mod meta;
 pub mod pane;
 pub mod term_state;
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use cmux_core::Engine;
-use cmux_protocol::{PaneId, Snapshot};
+use cmux_protocol::{PaneId, Snapshot, SplitAxis, WorkspaceId};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::State;
 
@@ -16,9 +16,75 @@ pub fn get_snapshot(engine: Eng<'_>) -> Snapshot {
     engine.snapshot()
 }
 
+// -- workspaces --------------------------------------------------------------
+
 #[tauri::command]
-pub fn create_pane(engine: Eng<'_>, cols: u16, rows: u16) -> Result<PaneId, String> {
-    engine.create_pane(cols, rows, None).map_err(err)
+pub fn create_workspace(
+    engine: Eng<'_>,
+    name: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> Result<WorkspaceId, String> {
+    engine
+        .create_workspace(name, None, cols, rows)
+        .map(|(ws, _)| ws)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub fn close_workspace(engine: Eng<'_>, workspace: WorkspaceId) -> Result<(), String> {
+    engine.close_workspace(workspace).map_err(err)
+}
+
+#[tauri::command]
+pub fn focus_workspace(engine: Eng<'_>, workspace: WorkspaceId) -> Result<(), String> {
+    engine.focus_workspace(workspace).map_err(err)
+}
+
+#[tauri::command]
+pub fn rename_workspace(
+    engine: Eng<'_>,
+    workspace: WorkspaceId,
+    name: String,
+) -> Result<(), String> {
+    engine.rename_workspace(workspace, name).map_err(err)
+}
+
+#[tauri::command]
+pub fn move_workspace(
+    engine: Eng<'_>,
+    workspace: WorkspaceId,
+    index: usize,
+) -> Result<(), String> {
+    engine.move_workspace(workspace, index).map_err(err)
+}
+
+#[tauri::command]
+pub fn set_ratio(
+    engine: Eng<'_>,
+    workspace: WorkspaceId,
+    path: Vec<bool>,
+    ratio: f32,
+) -> Result<(), String> {
+    engine.set_ratio(workspace, &path, ratio).map_err(err)
+}
+
+// -- panes --------------------------------------------------------------------
+
+#[tauri::command]
+pub fn split_pane(
+    engine: Eng<'_>,
+    pane: PaneId,
+    axis: SplitAxis,
+    cols: u16,
+    rows: u16,
+) -> Result<PaneId, String> {
+    engine.split_pane(pane, axis, cols, rows).map_err(err)
+}
+
+#[tauri::command]
+pub fn focus_pane(engine: Eng<'_>, pane: PaneId) -> Result<(), String> {
+    engine.focus_pane(pane).map_err(err)
 }
 
 #[tauri::command]
