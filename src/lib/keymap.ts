@@ -11,6 +11,7 @@ import {
   type PaneId,
 } from "./ipc";
 import { activePane, activeWorkspace, app } from "./state.svelte";
+import { adjustFontSize, resetFontSize } from "./settings.svelte";
 
 interface Rect {
   x: number;
@@ -120,6 +121,19 @@ export function handleKey(e: KeyboardEvent): boolean {
     }
     if (e.key === "PageDown") {
       cycleWorkspace(1);
+      return true;
+    }
+    // Font zoom, GNOME Terminal-style.
+    if (e.code === "Equal" || e.key === "+") {
+      adjustFontSize(1);
+      return true;
+    }
+    if (e.code === "Minus") {
+      adjustFontSize(-1);
+      return true;
+    }
+    if (e.code === "Digit0") {
+      resetFontSize();
       return true;
     }
   }

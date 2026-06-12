@@ -19,6 +19,7 @@
     type WorkspaceInfo,
   } from "./ipc";
   import { app, paneInfo } from "./state.svelte";
+  import { adjustFontSize, settings } from "./settings.svelte";
 
   const snapshot = $derived(app.snapshot);
 
@@ -172,6 +173,12 @@
     {/each}
   </ul>
   <button class="add" onclick={() => void createWorkspace()}>+ 새 워크스페이스</button>
+  <div class="font-control" title="글꼴 크기 (Ctrl+= / Ctrl+- / Ctrl+휠)">
+    <span class="font-label">Aa</span>
+    <button onclick={() => adjustFontSize(-1)}>−</button>
+    <span class="font-size">{settings.fontSize}px</span>
+    <button onclick={() => adjustFontSize(1)}>＋</button>
+  </div>
 </nav>
 
 {#if menu}
@@ -188,10 +195,8 @@
   .sidebar {
     display: flex;
     flex-direction: column;
-    width: 230px;
-    flex-shrink: 0;
+    width: 100%;
     background: #1a1b26;
-    border-right: 1px solid #2a2e42;
     overflow-y: auto;
   }
   ul {
@@ -306,6 +311,35 @@
   }
   .add:hover {
     background: #2f334d;
+  }
+  .font-control {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px 10px;
+    font-size: 0.75rem;
+    color: #565f89;
+  }
+  .font-label {
+    margin-right: auto;
+  }
+  .font-size {
+    min-width: 34px;
+    text-align: center;
+    color: #a9b1d6;
+  }
+  .font-control button {
+    width: 22px;
+    height: 20px;
+    color: #c0caf5;
+    background: #24283b;
+    border: 1px solid #3b4261;
+    border-radius: 4px;
+    cursor: pointer;
+    line-height: 1;
+  }
+  .font-control button:hover {
+    background: #3b4261;
   }
   .ctx-menu {
     position: fixed;

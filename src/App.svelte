@@ -4,8 +4,11 @@
   import SplitNode from "./lib/SplitNode.svelte";
   import { app, initState } from "./lib/state.svelte";
   import { handleKey } from "./lib/keymap";
+  import { setSidebarWidth, settings } from "./lib/settings.svelte";
 
   const snapshot = $derived(app.snapshot);
+
+  let draggingSidebar = $state(false);
 
   onMount(() => {
     void initState();
@@ -20,7 +23,25 @@
 />
 
 <div class="shell">
-  <Sidebar />
+  <div class="sidebar-wrap" style="width: {settings.sidebarWidth}px">
+    <Sidebar />
+  </div>
+  <div
+    class="sidebar-resizer"
+    class:dragging={draggingSidebar}
+    role="separator"
+    aria-orientation="vertical"
+    onpointerdown={(e) => {
+      draggingSidebar = true;
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    }}
+    onpointermove={(e) => {
+      if (draggingSidebar) setSidebarWidth(e.clientX);
+    }}
+    onpointerup={() => (draggingSidebar = false)}
+    onpointercancel={() => (draggingSidebar = false)}
+    ondblclick={() => setSidebarWidth(230)}
+  ></div>
   <main class="main">
     <!-- Every workspace stays mounted so its terminals keep their xterm
          buffers; only the active one is displayed. -->
@@ -38,6 +59,21 @@
     width: 100vw;
     height: 100vh;
     background: #16161e;
+  }
+  .sidebar-wrap {
+    flex-shrink: 0;
+    min-width: 0;
+    display: flex;
+  }
+  .sidebar-resizer {
+    flex: 0 0 4px;
+    cursor: col-resize;
+    background: #2a2e42;
+    touch-action: none;
+  }
+  .sidebar-resizer:hover,
+  .sidebar-resizer.dragging {
+    background: #7aa2f7;
   }
   .main {
     position: relative;

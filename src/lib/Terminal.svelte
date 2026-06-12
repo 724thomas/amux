@@ -10,6 +10,7 @@
   import "@xterm/xterm/css/xterm.css";
   import { writePane, resizePane, subscribePane, type PaneId } from "./ipc";
   import { handleKey } from "./keymap";
+  import { adjustFontSize, settings } from "./settings.svelte";
 
   export interface MenuAction {
     label: string;
@@ -25,13 +26,14 @@
   let host: HTMLDivElement;
   let menu = $state<{ x: number; y: number } | null>(null);
   let term = $state<Terminal>()!;
+  let refit: (() => void) | undefined;
 
   onMount(() => {
     term = new Terminal({
       allowProposedApi: true,
       scrollback: 10_000,
       fontFamily: "monospace",
-      fontSize: 14,
+      fontSize: settings.fontSize,
       theme: { background: "#16161e" },
     });
     const fit = new FitAddon();
@@ -68,6 +70,7 @@
         void resizePane(pane, term.cols, term.rows);
       }
     };
+    refit = doFit;
     const observer = new ResizeObserver(() => {
       cancelAnimationFrame(resizeRaf);
       resizeRaf = requestAnimationFrame(doFit);
@@ -85,6 +88,15 @@
 
   $effect(() => {
     if (focused && term) term.focus();
+  });
+
+  // Live font-size changes: update xterm, then refit cols/rows to the host.
+  $effect(() => {
+    const size = settings.fontSize;
+    if (term && term.options.fontSize !== size) {
+      term.options.fontSize = size;
+      refit?.();
+    }
   });
 
   async function menuAction(action: "copy" | "paste" | "selectAll" | "clear") {
@@ -120,6 +132,13 @@
   oncontextmenu={(e) => {
     e.preventDefault();
     menu = { x: e.clientX, y: e.clientY };
+  }}
+  onwheel={(e) => {
+    // Ctrl+wheel zooms the font, like GNOME Terminal.
+    if (e.ctrlKey) {
+      e.preventDefault();
+      adjustFontSize(e.deltaY < 0 ? 1 : -1);
+    }
   }}
 ></div>
 
