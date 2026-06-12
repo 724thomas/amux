@@ -55,8 +55,8 @@ WEBKIT_DISABLE_DMABUF_RENDERER=1 amux-app
 | 서버 열기 | 사이드바 포트 칩(`:5173`) 클릭 → 브라우저 |
 | URL 열기 | 터미널 안 링크 Ctrl+클릭 |
 
-<스크린샷 2 — pane 드래그 재배치 순간: pane에 마우스를 올려 우상단 호버 툴바(⠿ ◫ ⬓ ✕)가 보이고, ⠿를 드래그해 다른 pane 위에 올려 파란 드롭 존 오버레이(상/하/좌/우 절반 하이라이트)가 표시된 상태>
-<!-- ![드래그 재배치](docs/screenshots/02-drag-rearrange.png) -->
+<img width="1846" height="1072" alt="image" src="https://github.com/user-attachments/assets/77ee872f-81ee-46f8-bb4b-8614405b5a4e" />
+
 
 ### 키보드
 
@@ -87,17 +87,8 @@ WEBKIT_DISABLE_DMABUF_RENDERER=1 amux-app
 Claude Code는 hook 연동 시 정확하게 동작하고(아래 참고), 일반 명령은
 출력 휴리스틱으로 자동 판정됩니다.
 
-<스크린샷 3 — 상태 칩 4색이 동시에 보이는 사이드바 클로즈업: 터미널 4개가 각각 processing…(빨강) / processed(초록) / idle(파랑) / waiting(노랑) 칩을 단 상태. waiting pane에는 알림 뱃지(파란 점)와 알림 메시지 텍스트("Claude needs your permission..." 류)가 함께 보이면 베스트>
-<!-- ![상태 칩](docs/screenshots/03-status-chips.png) -->
+<img width="1846" height="1072" alt="image" src="https://github.com/user-attachments/assets/1812209b-cf5c-43de-ac5a-8a1f8b88f7c5" />
 
-### 알림
-
-보고 있지 않은 pane에서 작업 완료·입력 대기가 발생하면 GNOME 데스크톱
-알림 + pane 하이라이트 + 사이드바 뱃지가 옵니다. 사이드바 하단
-**알림 히스토리**에서 과거 알림을 클릭하면 해당 pane으로 이동합니다.
-
-<스크린샷 4 — 알림이 도착한 순간: 화면 상단에 GNOME 데스크톱 알림 토스트("작업이 끝났습니다" 등)가 떠 있고, 해당 pane 테두리에 하늘색 하이라이트 링이 깜빡이는 중이며, 사이드바 하단 알림 히스토리 패널에 시간·pane 이름·메시지 목록이 쌓여 있는 상태>
-<!-- ![알림](docs/screenshots/04-notifications.png) -->
 
 ### 테마
 
@@ -105,8 +96,8 @@ Claude Code는 hook 연동 시 정확하게 동작하고(아래 참고), 일반 
 Catppuccin Mocha · Gruvbox Dark · Nord · Solarized Light.
 터미널 16색 팔레트와 앱 전체 색이 함께 바뀌고 자동 저장됩니다.
 
-<스크린샷 5 — 테마 드롭다운이 열린 모습: 사이드바 하단 테마 메뉴에 6개 항목이 색 견본과 함께 보이고, Tokyo Night가 아닌 다른 테마(예: Solarized Light나 Gruvbox Dark)가 적용된 화면이면 효과가 잘 드러남>
-<!-- ![테마](docs/screenshots/05-themes.png) -->
+<img width="168" height="221" alt="image" src="https://github.com/user-attachments/assets/656cc4c4-9581-4f42-8235-c276346ab5ff" />
+
 
 ## Claude Code 상태 연동 (권장)
 
