@@ -1,7 +1,7 @@
-//! `cmux` — control a running cmux-ubuntu app over its Unix socket.
+//! `amux` — control a running amux app over its Unix socket.
 //!
-//! Inside a pane, `$CMUX_PANE_ID` / `$CMUX_SOCKET` are preset, so commands
-//! like `cmux read-screen` or `cmux notify` need no arguments — which is
+//! Inside a pane, `$AMUX_PANE_ID` / `$AMUX_SOCKET` are preset, so commands
+//! like `amux read-screen` or `amux notify` need no arguments — which is
 //! exactly what agent hooks want.
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -13,12 +13,12 @@ use serde_json::{json, Value};
 
 #[derive(Parser)]
 #[command(
-    name = "cmux",
+    name = "amux",
     version,
-    about = "Control a running cmux-ubuntu app (panes, workspaces, notifications) over its Unix socket"
+    about = "Control a running amux app (panes, workspaces, notifications) over its Unix socket"
 )]
 struct Cli {
-    /// Socket path (defaults to $CMUX_SOCKET, then $XDG_RUNTIME_DIR/cmux/cmux.sock)
+    /// Socket path (defaults to $AMUX_SOCKET, then $XDG_RUNTIME_DIR/amux/amux.sock)
     #[arg(long, global = true)]
     socket: Option<std::path::PathBuf>,
 
@@ -37,7 +37,7 @@ enum Command {
     /// Workspace operations
     #[command(subcommand)]
     Ws(WsCommand),
-    /// Split a pane (defaults to the calling pane via $CMUX_PANE_ID)
+    /// Split a pane (defaults to the calling pane via $AMUX_PANE_ID)
     Split {
         pane: Option<String>,
         /// Split side-by-side (default)
@@ -50,7 +50,7 @@ enum Command {
     /// Send literal text to a pane
     Send {
         text: String,
-        /// Target pane (defaults to $CMUX_PANE_ID)
+        /// Target pane (defaults to $AMUX_PANE_ID)
         #[arg(long)]
         pane: Option<String>,
         /// Append Enter after the text
@@ -60,7 +60,7 @@ enum Command {
     /// Send named keys to a pane (Enter, C-c, Up, ...)
     SendKeys {
         keys: Vec<String>,
-        /// Target pane (defaults to $CMUX_PANE_ID)
+        /// Target pane (defaults to $AMUX_PANE_ID)
         #[arg(long)]
         pane: Option<String>,
     },
@@ -104,7 +104,7 @@ impl Client {
     fn connect(path: &std::path::Path) -> anyhow::Result<Self> {
         let stream = UnixStream::connect(path).with_context(|| {
             format!(
-                "cmux 앱에 연결할 수 없습니다 ({}). 앱이 실행 중인지 확인하세요.",
+                "amux 앱에 연결할 수 없습니다 ({}). 앱이 실행 중인지 확인하세요.",
                 path.display()
             )
         })?;
@@ -126,7 +126,7 @@ impl Client {
         let mut response_line = String::new();
         BufReader::new(&self.stream).read_line(&mut response_line)?;
         let response: Value = serde_json::from_str(&response_line)
-            .context("invalid response from cmux app")?;
+            .context("invalid response from amux app")?;
         if let Some(error) = response.get("error").filter(|e| !e.is_null()) {
             bail!(
                 "{} (code {})",
@@ -143,13 +143,13 @@ fn short(uuid: &str, prefix: &str) -> String {
 }
 
 fn pane_or_env(pane: Option<String>) -> anyhow::Result<String> {
-    pane.or_else(|| std::env::var("CMUX_PANE_ID").ok())
-        .context("pane 인자를 주거나 cmux pane 안에서 실행하세요 ($CMUX_PANE_ID)")
+    pane.or_else(|| std::env::var("AMUX_PANE_ID").ok())
+        .context("pane 인자를 주거나 amux pane 안에서 실행하세요 ($AMUX_PANE_ID)")
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let socket = cli.socket.unwrap_or_else(cmux_protocol::default_socket_path);
+    let socket = cli.socket.unwrap_or_else(amux_protocol::default_socket_path);
     let mut client = Client::connect(&socket)?;
 
     let result = match cli.command {
@@ -233,7 +233,7 @@ fn main() -> anyhow::Result<()> {
         Command::Focus { pane } => client.call("pane.focus", json!({ "pane": pane }))?,
 
         Command::Notify { kind, title, body, from_claude_hook } => {
-            let pane = std::env::var("CMUX_PANE_ID").ok();
+            let pane = std::env::var("AMUX_PANE_ID").ok();
             let (title, body) = if from_claude_hook {
                 // Claude Code hooks pipe a JSON payload to stdin; pull the
                 // human-readable message out without requiring jq.

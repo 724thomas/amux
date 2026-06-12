@@ -1,6 +1,8 @@
 // User-tweakable UI settings, applied live and persisted in localStorage.
 
-const KEY = "cmux.settings";
+const KEY = "amux.settings";
+/// Pre-rename key; read once as a fallback so existing settings carry over.
+const OLD_KEY = "cmux.settings";
 
 interface Settings {
   fontSize: number;
@@ -12,7 +14,8 @@ const DEFAULTS: Settings = { fontSize: 14, sidebarWidth: 230, theme: "tokyo-nigh
 
 function load(): Settings {
   try {
-    return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) ?? "{}") };
+    const raw = localStorage.getItem(KEY) ?? localStorage.getItem(OLD_KEY) ?? "{}";
+    return { ...DEFAULTS, ...JSON.parse(raw) };
   } catch {
     return { ...DEFAULTS };
   }

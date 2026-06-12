@@ -8,8 +8,8 @@ edition = "2021"
 license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
-cmux-protocol = { path = "crates/cmux-protocol" }
-cmux-core = { path = "crates/cmux-core" }
+amux-protocol = { path = "crates/amux-protocol" }
+amux-core = { path = "crates/amux-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

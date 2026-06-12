@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use std::collections::VecDeque;
 
-use cmux_protocol::{
+use amux_protocol::{
     LayoutNode, NotificationEntry, NotifyKind, PaneId, PaneInfo, PaneNotification, PaneStatus,
     Snapshot, SplitAxis, WorkspaceId, WorkspaceInfo,
 };

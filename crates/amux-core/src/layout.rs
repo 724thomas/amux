@@ -1,11 +1,11 @@
-//! Pure operations on the workspace split tree (`cmux_protocol::LayoutNode`).
+//! Pure operations on the workspace split tree (`amux_protocol::LayoutNode`).
 //!
 //! Split nodes are addressed by *path*: a sequence of booleans from the root
 //! (`false` = first child, `true` = second child). The frontend tracks the
 //! same paths while rendering recursively, so a divider can name its split
 //! without the tree carrying IDs.
 
-use cmux_protocol::{LayoutNode, PaneId, SplitAxis};
+use amux_protocol::{LayoutNode, PaneId, SplitAxis};
 
 /// All panes in the tree, in-order.
 pub fn panes(node: &LayoutNode) -> Vec<PaneId> {

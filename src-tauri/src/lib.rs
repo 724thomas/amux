@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use cmux_core::{Engine, EngineEvent};
+use amux_core::{Engine, EngineEvent};
 use tauri::{Emitter, Manager};
 
 mod commands;
@@ -49,7 +49,7 @@ pub fn run() {
             tauri::async_runtime::spawn({
                 let engine = Arc::clone(&engine);
                 async move {
-                    if let Err(e) = cmux_core::server::run(engine).await {
+                    if let Err(e) = amux_core::server::run(engine).await {
                         tracing::error!("socket server: {e}");
                     }
                 }

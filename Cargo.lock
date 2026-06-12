@@ -58,6 +58,61 @@ dependencies = [
 ]
 
 [[package]]
+name = "amux-app"
+version = "0.1.0"
+dependencies = [
+ "amux-core",
+ "amux-protocol",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-clipboard-manager",
+ "tauri-plugin-opener",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "amux-cli"
+version = "0.1.0"
+dependencies = [
+ "amux-protocol",
+ "anyhow",
+ "clap",
+ "serde_json",
+]
+
+[[package]]
+name = "amux-core"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "amux-protocol",
+ "anyhow",
+ "indexmap 2.14.0",
+ "notify-rust",
+ "parking_lot",
+ "portable-pty",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "amux-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -626,61 +681,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
 dependencies = [
  "error-code",
-]
-
-[[package]]
-name = "cmux-app"
-version = "0.1.0"
-dependencies = [
- "cmux-core",
- "cmux-protocol",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-clipboard-manager",
- "tauri-plugin-opener",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "cmux-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "cmux-protocol",
- "serde_json",
-]
-
-[[package]]
-name = "cmux-core"
-version = "0.1.0"
-dependencies = [
- "alacritty_terminal",
- "anyhow",
- "cmux-protocol",
- "indexmap 2.14.0",
- "notify-rust",
- "parking_lot",
- "portable-pty",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "cmux-protocol"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "uuid",
 ]
 
 [[package]]

@@ -8,7 +8,7 @@ mod cwd;
 mod git;
 mod ports;
 
-use cmux_protocol::PaneMeta;
+use amux_protocol::PaneMeta;
 
 use crate::pane::Pane;
 

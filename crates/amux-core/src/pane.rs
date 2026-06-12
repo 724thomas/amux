@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use cmux_protocol::{env_keys, PaneId, PaneMeta, PaneNotification, PaneStatus, WorkspaceId};
+use amux_protocol::{env_keys, PaneId, PaneMeta, PaneNotification, PaneStatus, WorkspaceId};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
@@ -101,7 +101,7 @@ impl Pane {
         cmd.env(env_keys::WORKSPACE_ID, workspace.to_string());
         cmd.env(
             env_keys::SOCKET,
-            cmux_protocol::default_socket_path().as_os_str(),
+            amux_protocol::default_socket_path().as_os_str(),
         );
         let cwd = cwd
             .or_else(|| std::env::var_os("HOME").map(Into::into))
@@ -288,12 +288,12 @@ mod tests {
         )
         .expect("spawn pane");
 
-        pane.write(b"echo cmux-$((40+2))\n").expect("write");
+        pane.write(b"echo amux-$((40+2))\n").expect("write");
 
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let screen = pane.term.read_screen();
-            if screen.contains("cmux-42") {
+            if screen.contains("amux-42") {
                 break;
             }
             assert!(Instant::now() < deadline, "screen never showed output:\n{screen}");

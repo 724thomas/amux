@@ -1,4 +1,4 @@
-//! cmux-core: the engine behind cmux-ubuntu.
+//! amux-core: the engine behind amux.
 //!
 //! The `Engine` owns all workspaces and panes and is the single source of
 //! truth. Both the Tauri UI layer and the Unix-socket automation server call

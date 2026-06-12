@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use cmux_core::Engine;
-use cmux_protocol::{PaneId, Snapshot, SplitAxis, WorkspaceId};
+use amux_core::Engine;
+use amux_protocol::{PaneId, Snapshot, SplitAxis, WorkspaceId};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::State;
 

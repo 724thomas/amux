@@ -6,7 +6,7 @@
 //! via DBus (org.freedesktop.Notifications), which behaves identically on
 //! Wayland and X11.
 
-use cmux_protocol::NotifyKind;
+use amux_protocol::NotifyKind;
 use notify_rust::{Notification, Urgency};
 
 pub fn send_desktop(kind: NotifyKind, title: &str, body: &str) {
@@ -17,7 +17,7 @@ pub fn send_desktop(kind: NotifyKind, title: &str, body: &str) {
     };
     let mut notification = Notification::new();
     notification
-        .appname("cmux")
+        .appname("amux")
         .summary(title)
         .body(body)
         .urgency(urgency);

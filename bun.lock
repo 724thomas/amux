@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "cmux-ubuntu",
+      "name": "amux-ubuntu",
       "dependencies": {
         "@tauri-apps/api": "^2.11.0",
         "@tauri-apps/plugin-clipboard-manager": "^2.3.2",

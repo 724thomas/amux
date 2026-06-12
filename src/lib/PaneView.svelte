@@ -36,7 +36,7 @@
 
   function onDrop(e: DragEvent) {
     e.preventDefault();
-    const source = e.dataTransfer?.getData("cmux/pane");
+    const source = e.dataTransfer?.getData("amux/pane");
     const zone = dropZone;
     dropZone = null;
     if (!source || source === pane || !zone) return;
@@ -55,7 +55,7 @@
     if (!focused) void focusPane(pane);
   }}
   ondragover={(e) => {
-    if (e.dataTransfer?.types.includes("cmux/pane")) {
+    if (e.dataTransfer?.types.includes("amux/pane")) {
       e.preventDefault();
       dropZone = zoneOf(e, e.currentTarget as HTMLElement);
     }
@@ -76,7 +76,7 @@
       title="드래그해서 위치 이동"
       draggable="true"
       ondragstart={(e) => {
-        e.dataTransfer?.setData("cmux/pane", pane);
+        e.dataTransfer?.setData("amux/pane", pane);
         if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
       }}
     >

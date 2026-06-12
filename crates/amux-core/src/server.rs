@@ -1,14 +1,14 @@
 //! NDJSON JSON-RPC 2.0 server over a Unix domain socket.
 //!
 //! One request per line, one response per line — trivially debuggable with
-//! `socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/cmux/cmux.sock`. The server calls
+//! `socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/amux/amux.sock`. The server calls
 //! the same `Engine` methods as the UI, so anything the UI can do, an agent
 //! can script.
 
 use std::os::unix::fs::DirBuilderExt;
 use std::sync::Arc;
 
-use cmux_protocol::{
+use amux_protocol::{
     methods::*, rpc_codes, PaneId, RpcRequest, RpcResponse, WorkspaceId,
 };
 use serde_json::{json, Value};
@@ -18,7 +18,7 @@ use tokio::net::{UnixListener, UnixStream};
 use crate::engine::{Engine, EngineError};
 
 pub async fn run(engine: Arc<Engine>) -> anyhow::Result<()> {
-    let path = cmux_protocol::default_socket_path();
+    let path = amux_protocol::default_socket_path();
     let dir = path.parent().expect("socket path has a parent");
     if !dir.exists() {
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
@@ -27,7 +27,7 @@ pub async fn run(engine: Arc<Engine>) -> anyhow::Result<()> {
     if path.exists() {
         // Live socket → another instance owns it; stale → clean up and bind.
         if UnixStream::connect(&path).await.is_ok() {
-            anyhow::bail!("another cmux instance is already serving {}", path.display());
+            anyhow::bail!("another amux instance is already serving {}", path.display());
         }
         std::fs::remove_file(&path)?;
     }
@@ -190,7 +190,7 @@ fn dispatch(
             let pane = resolve_pane(engine, &p.pane)?;
             let mut bytes = Vec::new();
             for key in &p.keys {
-                let mapped = cmux_protocol::key_to_bytes(key)
+                let mapped = amux_protocol::key_to_bytes(key)
                     .ok_or_else(|| RpcDispatchError::Other(format!("unknown key: {key}")))?;
                 bytes.extend(mapped);
             }

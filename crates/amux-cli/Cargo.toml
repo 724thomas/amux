@@ -1,16 +1,16 @@
 [package]
-name = "cmux-cli"
+name = "amux-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "CLI for controlling cmux-ubuntu over its Unix socket"
+description = "CLI for controlling amux over its Unix socket"
 
 [[bin]]
-name = "cmux"
+name = "amux"
 path = "src/main.rs"
 
 [dependencies]
-cmux-protocol = { workspace = true }
+amux-protocol = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }

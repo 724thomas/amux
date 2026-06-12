@@ -1,4 +1,4 @@
-//! Shared types between the cmux engine, the Tauri app, and the `cmux` CLI.
+//! Shared types between the amux engine, the Tauri app, and the `amux` CLI.
 //!
 //! Everything that crosses a process or IPC boundary lives here:
 //! entity IDs, the state `Snapshot` mirrored to the frontend, and the
@@ -211,20 +211,20 @@ pub mod rpc_codes {
     pub const PANE_EXITED: i64 = -32001;
 }
 
-/// Default socket path: `$XDG_RUNTIME_DIR/cmux/cmux.sock`,
-/// falling back to `/tmp/cmux-$UID/cmux.sock`.
-/// `$CMUX_SOCKET` (set inside panes) overrides both.
+/// Default socket path: `$XDG_RUNTIME_DIR/amux/amux.sock`,
+/// falling back to `/tmp/amux-$UID/amux.sock`.
+/// `$AMUX_SOCKET` (set inside panes) overrides both.
 pub fn default_socket_path() -> std::path::PathBuf {
     if let Some(explicit) = std::env::var_os(env_keys::SOCKET) {
         return std::path::PathBuf::from(explicit);
     }
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(|d| std::path::PathBuf::from(d).join("cmux"))
+        .map(|d| std::path::PathBuf::from(d).join("amux"))
         .unwrap_or_else(|| {
             let uid = unsafe { libc_geteuid() };
-            std::path::PathBuf::from(format!("/tmp/cmux-{uid}"))
+            std::path::PathBuf::from(format!("/tmp/amux-{uid}"))
         });
-    dir.join("cmux.sock")
+    dir.join("amux.sock")
 }
 
 // Avoid a libc dependency for one call: geteuid via extern.
@@ -235,9 +235,9 @@ extern "C" {
 
 /// Environment variables injected into every pane's child process.
 pub mod env_keys {
-    pub const PANE_ID: &str = "CMUX_PANE_ID";
-    pub const WORKSPACE_ID: &str = "CMUX_WORKSPACE_ID";
-    pub const SOCKET: &str = "CMUX_SOCKET";
+    pub const PANE_ID: &str = "AMUX_PANE_ID";
+    pub const WORKSPACE_ID: &str = "AMUX_WORKSPACE_ID";
+    pub const SOCKET: &str = "AMUX_SOCKET";
 }
 
 // ---------------------------------------------------------------------------

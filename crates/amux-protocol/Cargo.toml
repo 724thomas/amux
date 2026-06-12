@@ -1,9 +1,9 @@
 [package]
-name = "cmux-protocol"
+name = "amux-protocol"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Shared types and JSON-RPC protocol for cmux-ubuntu"
+description = "Shared types and JSON-RPC protocol for amux"
 
 [dependencies]
 serde = { workspace = true }

@@ -1,47 +1,69 @@
-# Svelte + TS + Vite
+# amux
 
-This template should help get you started developing with Svelte and TypeScript in Vite.
+AI 코딩 에이전트(Claude Code 등)를 **병렬로** 돌리기 위한 Ubuntu 데스크톱 터미널.
 
-## Recommended IDE Setup
+- 워크스페이스(탭) × 분할 pane — 동시 다중 터미널, 개수 제한 없음
+- 에이전트 상태 칩: 🔴 processing / 🟢 processed / 🔵 idle / 🟡 waiting
+- 데스크톱 알림 + 사이드바 알림 히스토리 (BEL, OSC 9/777, Claude Code hook)
+- 사이드바에 브랜치 · cwd · 리슨 포트(클릭하면 브라우저 오픈) 표시
+- 모든 조작이 마우스로 가능 (분할·닫기·이름변경·드래그 재배치·테마)
+- `amux` CLI로 외부 자동화: `ls`, `split`, `send`, `read-screen`, `notify` …
+- 색 테마 6종 (Tokyo Night 기본)
 
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode).
+스택: Tauri 2 (Rust) + Svelte 5 + xterm.js.
 
-## Need an official Svelte framework?
+## 설치 (.deb)
 
-Check out [SvelteKit](https://github.com/sveltejs/kit#readme), which is also powered by Vite. Deploy anywhere with its serverless-first approach and adapt to various platforms, with out of the box support for TypeScript, SCSS, and Less, and easily-added support for mdsvex, GraphQL, PostCSS, Tailwind CSS, and more.
-
-## Technical considerations
-
-**Why use this over SvelteKit?**
-
-- It brings its own routing solution which might not be preferable for some users.
-- It is first and foremost a framework that just happens to use Vite under the hood, not a Vite app.
-
-This template contains as little as possible to get started with Vite + TypeScript + Svelte, while taking into account the developer experience with regards to HMR and intellisense. It demonstrates capabilities on par with the other `create-vite` templates and is a good starting point for beginners dipping their toes into a Vite + Svelte project.
-
-Should you later need the extended capabilities and extensibility provided by SvelteKit, the template has been structured similarly to SvelteKit so that it is easy to migrate.
-
-**Why `global.d.ts` instead of `compilerOptions.types` inside `jsconfig.json` or `tsconfig.json`?**
-
-Setting `compilerOptions.types` shuts out all other types not explicitly listed in the configuration. Using triple-slash references keeps the default TypeScript setting of accepting type information from the entire workspace, while also adding `svelte` and `vite/client` type information.
-
-**Why include `.vscode/extensions.json`?**
-
-Other templates indirectly recommend extensions via the README, but this file allows VS Code to prompt the user to install the recommended extension upon opening the project.
-
-**Why enable `allowJs` in the TS template?**
-
-While `allowJs: false` would indeed prevent the use of `.js` files in the project, it does not prevent the use of JavaScript syntax in `.svelte` files. In addition, it would force `checkJs: false`, bringing the worst of both worlds: not being able to guarantee the entire codebase is TypeScript, and also having worse typechecking for the existing JavaScript. In addition, there are valid use cases in which a mixed codebase may be relevant.
-
-**Why is HMR not preserving my local component state?**
-
-HMR state preservation comes with a number of gotchas! It has been disabled by default in both `svelte-hmr` and `@sveltejs/vite-plugin-svelte` due to its often surprising behavior. You can read the details [here](https://github.com/rixo/svelte-hmr#svelte-hmr).
-
-If you have state that's important to retain within a component, consider creating an external store which would not be replaced by HMR.
-
-```ts
-// store.ts
-// An extremely simple external store
-import { writable } from 'svelte/store'
-export default writable(0)
+```bash
+sudo apt install ./amux_0.1.0_amd64.deb
 ```
+
+- GNOME 앱 목록에 **amux** 아이콘 등록, `amux` CLI는 `/usr/bin/amux`로 설치
+- 다른 Ubuntu PC에는 `.deb` 파일 하나만 복사해서 동일하게 설치
+- 의존성(webkit2gtk 등)은 apt가 자동 해결
+
+빈 화면이 뜨면 (WebKitGTK + Wayland DMABUF 이슈):
+
+```bash
+WEBKIT_DISABLE_DMABUF_RENDERER=1 amux-app
+```
+
+## Claude Code 상태 연동 (권장)
+
+```bash
+python3 scripts/install-claude-hooks.py
+```
+
+`~/.claude/settings.json`에 hook을 병합 설치합니다 (백업 자동 생성).
+자세한 매핑은 [docs/claude-hooks.md](docs/claude-hooks.md) 참고.
+
+## CLI
+
+pane 안에서는 인자 없이 자기 pane을 가리킵니다 (`AMUX_PANE_ID` 상속).
+
+```bash
+amux ls                          # 워크스페이스/pane 목록
+amux ws create                   # 새 워크스페이스
+amux split --right               # 현재 pane 오른쪽 분할
+amux send 'git status' --enter   # 텍스트 입력
+amux send-keys C-c               # 키 입력 (tmux 스타일 이름)
+amux read-screen p-3fa2c1        # 다른 pane 화면 읽기
+amux notify --kind done --title 빌드 --body 완료
+```
+
+소켓: `$XDG_RUNTIME_DIR/amux/amux.sock`, NDJSON JSON-RPC 2.0 (`socat`으로 디버깅 가능).
+
+## 개발
+
+```bash
+# 요구: rustup, bun, libwebkit2gtk-4.1-dev 등 Tauri 의존성
+bun install
+bun run tauri dev        # 개발 실행 (HMR)
+cargo test --workspace   # Rust 테스트
+bun run tauri build      # 릴리스 + .deb 번들
+```
+
+> ⚠️ 패키징 전 `cargo build --release -p amux-cli` 필요 — `.deb`이
+> `target/release/amux`를 `/usr/bin/amux`로 동봉합니다.
+
+구조: `crates/amux-protocol`(공유 타입) / `crates/amux-core`(엔진: PTY·터미널 상태·알림·소켓 서버) / `crates/amux-cli`(CLI) / `src-tauri`(앱 셸) / `src`(Svelte UI).

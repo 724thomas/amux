@@ -1,12 +1,12 @@
 [package]
-name = "cmux-core"
+name = "amux-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Engine for cmux-ubuntu: PTY management, terminal state, metadata, notifications, socket server"
+description = "Engine for amux: PTY management, terminal state, metadata, notifications, socket server"
 
 [dependencies]
-cmux-protocol = { workspace = true }
+amux-protocol = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
