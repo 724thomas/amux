@@ -15,15 +15,18 @@ AI 코딩 에이전트(Claude Code 등)를 **병렬로** 돌리기 위한 Ubuntu
 
 스택: Tauri 2 (Rust) + Svelte 5 + xterm.js.
 
-## 설치 (.deb)
+## 설치
+
+[**Releases**](https://github.com/724thomas/amux/releases)에서 최신 `.deb`를 받아 설치합니다:
 
 ```bash
+wget https://github.com/724thomas/amux/releases/download/v0.1.0/amux_0.1.0_amd64.deb
 sudo apt install ./amux_0.1.0_amd64.deb
 ```
 
 - GNOME 앱 목록에 **amux** 아이콘 등록, `amux` CLI는 `/usr/bin/amux`로 설치
-- 다른 Ubuntu PC에는 `.deb` 파일 하나만 복사해서 동일하게 설치
 - 의존성(webkit2gtk 등)은 apt가 자동 해결
+- 빌드 도구 없이 설치 파일 하나로 끝 — 소스 빌드는 아래 [개발](#개발) 참고
 
 빈 화면이 뜨면 (WebKitGTK + Wayland DMABUF 이슈):
 
