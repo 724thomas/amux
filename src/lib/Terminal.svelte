@@ -7,6 +7,7 @@
   import { Unicode11Addon } from "@xterm/addon-unicode11";
   import { WebLinksAddon } from "@xterm/addon-web-links";
   import { openUrl } from "@tauri-apps/plugin-opener";
+  import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
   import "@xterm/xterm/css/xterm.css";
   import { writePane, resizePane, subscribePane, type PaneId } from "./ipc";
   import { handleKey } from "./keymap";
@@ -47,7 +48,41 @@
     );
     // App shortcuts (split/navigate/...) win over the terminal; everything
     // else (Ctrl+C, Tab, F-keys...) flows through to the shell untouched.
-    term.attachCustomKeyEventHandler((e) => !handleKey(e));
+    term.attachCustomKeyEventHandler((e) => {
+      // Shift+Enter → ESC+CR: Claude Code 등 TUI가 제출 대신 줄바꿈으로
+      // 해석하는 시퀀스 (iTerm2 /terminal-setup과 동일한 매핑).
+      if (
+        e.type === "keydown" &&
+        e.key === "Enter" &&
+        e.shiftKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
+        void writePane(pane, "\x1b\r");
+        return false;
+      }
+      if (e.type === "keydown" && e.ctrlKey && e.shiftKey && !e.altKey) {
+        // Terminal-convention clipboard keys, via the Rust clipboard
+        // (navigator.clipboard is unreliable in WebKitGTK).
+        if (e.code === "KeyC" && term.hasSelection()) {
+          void copySelection();
+          return false;
+        }
+        if (e.code === "KeyV") {
+          void pasteClipboard();
+          return false;
+        }
+      }
+      return !handleKey(e);
+    });
+    // Linux terminal convention: selecting text copies it.
+    let selectionTimer: ReturnType<typeof setTimeout> | undefined;
+    term.onSelectionChange(() => {
+      clearTimeout(selectionTimer);
+      selectionTimer = setTimeout(() => {
+        if (term.hasSelection()) void writeText(term.getSelection());
+      }, 150);
+    });
     term.open(host);
     try {
       const webgl = new WebglAddon();
@@ -99,19 +134,31 @@
     }
   });
 
+  async function copySelection() {
+    const sel = term.getSelection();
+    if (sel) await writeText(sel);
+  }
+
+  async function pasteClipboard() {
+    try {
+      const text = await readText();
+      // term.paste() honors bracketed-paste mode (vim, fzf, modern shells)
+      // and feeds onData → PTY.
+      if (text) term.paste(text);
+    } catch {
+      // Clipboard empty or unreadable — nothing to paste.
+    }
+  }
+
   async function menuAction(action: "copy" | "paste" | "selectAll" | "clear") {
     menu = null;
     switch (action) {
-      case "copy": {
-        const sel = term.getSelection();
-        if (sel) await navigator.clipboard.writeText(sel);
+      case "copy":
+        await copySelection();
         break;
-      }
-      case "paste": {
-        const text = await navigator.clipboard.readText();
-        if (text) await writePane(pane, text);
+      case "paste":
+        await pasteClipboard();
         break;
-      }
       case "selectAll":
         term.selectAll();
         break;
@@ -138,6 +185,13 @@
     if (e.ctrlKey) {
       e.preventDefault();
       adjustFontSize(e.deltaY < 0 ? 1 : -1);
+    }
+  }}
+  onauxclick={(e) => {
+    // Middle-click pastes, like every Linux terminal.
+    if (e.button === 1) {
+      e.preventDefault();
+      void pasteClipboard();
     }
   }}
 ></div>
