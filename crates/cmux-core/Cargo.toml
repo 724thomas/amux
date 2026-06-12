@@ -16,3 +16,5 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 indexmap = { workspace = true }
+portable-pty = "0.9.0"
+alacritty_terminal = "0.26.0"

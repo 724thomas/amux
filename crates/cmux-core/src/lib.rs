@@ -16,5 +16,7 @@
 //! - `persist`    — session save/restore (M5)
 
 pub mod engine;
+pub mod pane;
+pub mod term_state;
 
-pub use engine::{Engine, EngineEvent};
+pub use engine::{Engine, EngineError, EngineEvent};
