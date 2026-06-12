@@ -21,7 +21,7 @@
   } from "./ipc";
   import { app, focusTerm, paneInfo } from "./state.svelte";
   import { adjustFontSize, setTheme, settings } from "./settings.svelte";
-  import { THEMES } from "./themes";
+  import { THEMES, themeById } from "./themes";
 
   const snapshot = $derived(app.snapshot);
 
@@ -30,6 +30,7 @@
     | { kind: "pane"; id: PaneId; name: string };
 
   let menu = $state<{ x: number; y: number; target: MenuTarget } | null>(null);
+  let themeMenuOpen = $state(false);
   let renaming = $state<{ kind: "workspace" | "pane"; id: string } | null>(null);
   let renameValue = $state("");
   let draggedId = $state<WorkspaceId | null>(null);
@@ -119,7 +120,12 @@
   />
 {/snippet}
 
-<svelte:window onclick={() => (menu = null)} />
+<svelte:window
+  onclick={() => {
+    menu = null;
+    themeMenuOpen = false;
+  }}
+/>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <nav
@@ -255,14 +261,33 @@
 
   <div class="theme-control" title="색 테마">
     <span class="font-label">테마</span>
-    <select
-      value={settings.theme}
-      onchange={(e) => setTheme((e.currentTarget as HTMLSelectElement).value)}
+    <button
+      class="theme-btn"
+      onclick={(e) => {
+        e.stopPropagation();
+        themeMenuOpen = !themeMenuOpen;
+      }}
     >
-      {#each THEMES as t (t.id)}
-        <option value={t.id}>{t.name}</option>
-      {/each}
-    </select>
+      <span class="swatch" style="background: {themeById(settings.theme).term.background}"></span>
+      <span class="theme-name">{themeById(settings.theme).name}</span>
+      <span class="caret">▴</span>
+    </button>
+    {#if themeMenuOpen}
+      <div class="theme-menu">
+        {#each THEMES as t (t.id)}
+          <button
+            class:selected={t.id === settings.theme}
+            onclick={() => {
+              setTheme(t.id);
+              themeMenuOpen = false;
+            }}
+          >
+            <span class="swatch" style="background: {t.term.background}"></span>
+            {t.name}
+          </button>
+        {/each}
+      </div>
+    {/if}
   </div>
 
   <div class="font-control" title="글꼴 크기 (Ctrl+= / Ctrl+- / Ctrl+휠)">
@@ -524,6 +549,7 @@
     background: var(--surface-4);
   }
   .theme-control {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -532,16 +558,74 @@
     color: var(--muted);
     border-top: 1px solid var(--border);
   }
-  .theme-control select {
+  .theme-btn {
     flex: 1;
     min-width: 0;
-    padding: 2px 4px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 6px;
     font-size: 0.75rem;
     color: var(--text);
     background: var(--surface-3);
     border: 1px solid var(--border-2);
     border-radius: 4px;
     cursor: pointer;
+  }
+  .theme-btn:hover {
+    background: var(--border-2);
+  }
+  .theme-name {
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .caret {
+    color: var(--muted);
+  }
+  .swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    border: 1px solid var(--border-2);
+    flex-shrink: 0;
+  }
+  .theme-menu {
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    bottom: calc(100% + 2px);
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    padding: 0.25rem;
+    background: var(--surface-2);
+    border: 1px solid var(--border-2);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  }
+  .theme-menu button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0.35rem 0.5rem;
+    text-align: left;
+    font-size: 0.8rem;
+    color: var(--text);
+    background: none;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .theme-menu button:hover {
+    background: var(--border-2);
+  }
+  .theme-menu button.selected {
+    color: var(--accent);
+    font-weight: 700;
   }
   .font-control {
     display: flex;
