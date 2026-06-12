@@ -26,6 +26,7 @@ const TAIL_CAP: usize = 512 * 1024;
 pub struct Pane {
     pub id: PaneId,
     pub workspace: WorkspaceId,
+    pub name: Mutex<String>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
@@ -42,6 +43,7 @@ impl Pane {
     pub fn spawn(
         id: PaneId,
         workspace: WorkspaceId,
+        name: String,
         cols: u16,
         rows: u16,
         cwd: Option<std::path::PathBuf>,
@@ -81,6 +83,7 @@ impl Pane {
         let pane = Arc::new(Self {
             id,
             workspace,
+            name: Mutex::new(name),
             master: Mutex::new(pty.master),
             writer: Mutex::new(writer),
             killer: Mutex::new(killer),
@@ -203,6 +206,7 @@ mod tests {
         let pane = Pane::spawn(
             PaneId::new(),
             WorkspaceId::new(),
+            "test".into(),
             80,
             24,
             None,
@@ -228,7 +232,7 @@ mod tests {
     /// Sinks receive live output, and late subscribers get the tail replay.
     #[test]
     fn sink_receives_output_with_replay() {
-        let pane = Pane::spawn(PaneId::new(), WorkspaceId::new(), 80, 24, None, || {})
+        let pane = Pane::spawn(PaneId::new(), WorkspaceId::new(), "test".into(), 80, 24, None, || {})
             .expect("spawn pane");
         pane.write(b"echo replay-me\n").expect("write");
         std::thread::sleep(Duration::from_millis(1500));

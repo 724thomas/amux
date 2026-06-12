@@ -21,6 +21,7 @@ export interface PaneNotification {
 export interface PaneInfo {
   id: PaneId;
   workspace: WorkspaceId;
+  name: string;
   meta: PaneMeta;
   notification: PaneNotification | null;
   exited: boolean;
@@ -77,6 +78,9 @@ export const splitPane = (pane: PaneId, axis: SplitAxis, cols = 80, rows = 24) =
   invoke<PaneId>("split_pane", { pane, axis, cols, rows });
 
 export const focusPane = (pane: PaneId) => invoke<void>("focus_pane", { pane });
+
+export const renamePane = (pane: PaneId, name: string) =>
+  invoke<void>("rename_pane", { pane, name });
 
 export const writePane = (pane: PaneId, data: string) =>
   invoke<void>("write_pane", { pane, data });

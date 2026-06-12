@@ -1,25 +1,41 @@
 <script lang="ts">
-  // Vertical workspace list: name, git branch, cwd, listening ports.
-  // Mouse-first: click to switch, drag to reorder, right-click to
-  // rename/close, port chips open the browser, + creates a workspace.
+  // Vertical list: workspaces with their terminals nested beneath
+  // (워크스페이스 1 → 터미널 1, 터미널 2 ...). Mouse-first: click to switch,
+  // drag to reorder workspaces, right-click to rename/close, port chips
+  // open the browser, + creates a workspace.
   import { openUrl } from "@tauri-apps/plugin-opener";
   import {
+    closePane,
     closeWorkspace,
     createWorkspace,
+    focusPane,
     focusWorkspace,
     moveWorkspace,
+    renamePane,
     renameWorkspace,
+    type LayoutNode,
+    type PaneId,
     type WorkspaceId,
     type WorkspaceInfo,
   } from "./ipc";
-  import { app } from "./state.svelte";
+  import { app, paneInfo } from "./state.svelte";
 
   const snapshot = $derived(app.snapshot);
 
-  let menu = $state<{ x: number; y: number; workspace: WorkspaceId } | null>(null);
-  let renaming = $state<WorkspaceId | null>(null);
+  type MenuTarget =
+    | { kind: "workspace"; id: WorkspaceId; name: string }
+    | { kind: "pane"; id: PaneId; name: string };
+
+  let menu = $state<{ x: number; y: number; target: MenuTarget } | null>(null);
+  let renaming = $state<{ kind: "workspace" | "pane"; id: string } | null>(null);
   let renameValue = $state("");
   let draggedId = $state<WorkspaceId | null>(null);
+
+  function layoutPanes(node: LayoutNode): PaneId[] {
+    return node.type === "leaf"
+      ? [node.pane]
+      : [...layoutPanes(node.first), ...layoutPanes(node.second)];
+  }
 
   function wsPorts(ws: WorkspaceInfo): number[] {
     const ports = new Set<number>();
@@ -30,80 +46,83 @@
     return [...ports].sort((a, b) => a - b);
   }
 
-  function wsMeta(ws: WorkspaceInfo) {
-    return snapshot?.panes.find((p) => p.id === ws.active_pane)?.meta ?? null;
-  }
-
   function shortCwd(cwd: string | null): string {
     if (!cwd) return "";
     const parts = cwd.split("/").filter(Boolean);
     return parts.length > 2 ? "…/" + parts.slice(-2).join("/") : cwd;
   }
 
-  function startRename(id: WorkspaceId, current: string) {
+  function openMenu(e: MouseEvent, target: MenuTarget) {
+    e.preventDefault();
+    e.stopPropagation();
+    menu = { x: e.clientX, y: e.clientY, target };
+  }
+
+  function startRename(target: MenuTarget) {
     menu = null;
-    renaming = id;
-    renameValue = current;
+    renaming = { kind: target.kind, id: target.id };
+    renameValue = target.name;
   }
 
   function commitRename() {
     if (renaming && renameValue.trim()) {
-      void renameWorkspace(renaming, renameValue.trim());
+      const name = renameValue.trim();
+      if (renaming.kind === "workspace") void renameWorkspace(renaming.id, name);
+      else void renamePane(renaming.id, name);
     }
     renaming = null;
   }
 
-  function onDrop(targetIndex: number) {
-    if (draggedId) void moveWorkspace(draggedId, targetIndex);
-    draggedId = null;
+  function closeTarget(target: MenuTarget) {
+    menu = null;
+    if (target.kind === "workspace") void closeWorkspace(target.id);
+    else void closePane(target.id);
   }
 </script>
+
+{#snippet renameInput()}
+  <!-- svelte-ignore a11y_autofocus -->
+  <input
+    class="rename"
+    autofocus
+    bind:value={renameValue}
+    onblur={commitRename}
+    onkeydown={(e) => {
+      if (e.key === "Enter") commitRename();
+      if (e.key === "Escape") renaming = null;
+      e.stopPropagation();
+    }}
+    onclick={(e) => e.stopPropagation()}
+  />
+{/snippet}
 
 <svelte:window onclick={() => (menu = null)} />
 
 <nav class="sidebar">
-  <ul>
+  <ul class="workspaces">
     {#each snapshot?.workspaces ?? [] as ws, index (ws.id)}
-      {@const meta = wsMeta(ws)}
       {@const ports = wsPorts(ws)}
+      {@const isActiveWs = ws.id === snapshot?.active_workspace}
       <li>
         <button
           class="entry"
-          class:active={ws.id === snapshot?.active_workspace}
-          draggable={renaming !== ws.id}
+          class:active={isActiveWs}
+          draggable={renaming?.id !== ws.id}
           onclick={() => void focusWorkspace(ws.id)}
-          oncontextmenu={(e) => {
-            e.preventDefault();
-            menu = { x: e.clientX, y: e.clientY, workspace: ws.id };
-          }}
+          oncontextmenu={(e) => openMenu(e, { kind: "workspace", id: ws.id, name: ws.name })}
           ondragstart={() => (draggedId = ws.id)}
           ondragover={(e) => e.preventDefault()}
           ondrop={(e) => {
             e.preventDefault();
-            onDrop(index);
+            if (draggedId) void moveWorkspace(draggedId, index);
+            draggedId = null;
           }}
         >
-          {#if renaming === ws.id}
-            <!-- svelte-ignore a11y_autofocus -->
-            <input
-              class="rename"
-              autofocus
-              bind:value={renameValue}
-              onblur={commitRename}
-              onkeydown={(e) => {
-                if (e.key === "Enter") commitRename();
-                if (e.key === "Escape") renaming = null;
-                e.stopPropagation();
-              }}
-              onclick={(e) => e.stopPropagation()}
-            />
+          {#if renaming?.kind === "workspace" && renaming.id === ws.id}
+            {@render renameInput()}
           {:else}
             <span class="name">{ws.name}</span>
           {/if}
-          <span class="detail">
-            {#if meta?.git_branch}<span class="branch">⎇ {meta.git_branch}</span>{/if}
-            <span class="cwd">{shortCwd(meta?.cwd ?? null)}</span>
-          </span>
           {#if ports.length > 0}
             <span class="ports">
               {#each ports as port (port)}
@@ -124,6 +143,31 @@
             </span>
           {/if}
         </button>
+        <ul class="panes">
+          {#each layoutPanes(ws.layout) as paneId (paneId)}
+            {@const pane = paneInfo(paneId)}
+            <li>
+              <button
+                class="pane-entry"
+                class:active={isActiveWs && paneId === ws.active_pane}
+                onclick={() => void focusPane(paneId)}
+                oncontextmenu={(e) =>
+                  openMenu(e, { kind: "pane", id: paneId, name: pane?.name ?? "" })}
+              >
+                {#if renaming?.kind === "pane" && renaming.id === paneId}
+                  {@render renameInput()}
+                {:else}
+                  <span class="pane-name">{pane?.name ?? "터미널"}</span>
+                  <span class="pane-detail">
+                    {#if pane?.meta.git_branch}<span class="branch">⎇ {pane.meta.git_branch}</span
+                      >{/if}
+                    <span class="cwd">{shortCwd(pane?.meta.cwd ?? null)}</span>
+                  </span>
+                {/if}
+              </button>
+            </li>
+          {/each}
+        </ul>
       </li>
     {/each}
   </ul>
@@ -131,16 +175,12 @@
 </nav>
 
 {#if menu}
-  {@const target = menu.workspace}
-  {@const name = snapshot?.workspaces.find((w) => w.id === target)?.name ?? ""}
+  {@const target = menu.target}
   <div class="ctx-menu" style="left: {menu.x}px; top: {menu.y}px">
-    <button onclick={() => startRename(target, name)}>이름 변경</button>
-    <button
-      onclick={() => {
-        menu = null;
-        void closeWorkspace(target);
-      }}>워크스페이스 닫기</button
-    >
+    <button onclick={() => startRename(target)}>이름 변경</button>
+    <button onclick={() => closeTarget(target)}>
+      {target.kind === "workspace" ? "워크스페이스 닫기" : "터미널 닫기"}
+    </button>
   </div>
 {/if}
 
@@ -148,22 +188,24 @@
   .sidebar {
     display: flex;
     flex-direction: column;
-    width: 220px;
+    width: 230px;
     flex-shrink: 0;
     background: #1a1b26;
     border-right: 1px solid #2a2e42;
     overflow-y: auto;
   }
   ul {
-    flex: 1;
     list-style: none;
+  }
+  .workspaces {
+    flex: 1;
   }
   .entry {
     display: flex;
-    flex-direction: column;
-    gap: 2px;
+    align-items: center;
+    gap: 6px;
     width: 100%;
-    padding: 8px 10px;
+    padding: 8px 10px 4px;
     text-align: left;
     color: #c0caf5;
     background: none;
@@ -175,25 +217,54 @@
     background: #1f2335;
   }
   .entry.active {
-    background: #24283b;
     border-left-color: #7aa2f7;
   }
   .name {
     font-size: 0.85rem;
-    font-weight: 600;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .rename {
-    font-size: 0.85rem;
+    width: 100%;
+    font-size: 0.8rem;
     color: #c0caf5;
     background: #16161e;
     border: 1px solid #7aa2f7;
     border-radius: 4px;
     padding: 1px 4px;
   }
-  .detail {
+  .panes {
+    padding-bottom: 4px;
+  }
+  .pane-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    width: 100%;
+    padding: 4px 10px 4px 22px;
+    text-align: left;
+    color: #a9b1d6;
+    background: none;
+    border: none;
+    border-left: 3px solid transparent;
+    cursor: pointer;
+  }
+  .pane-entry:hover {
+    background: #1f2335;
+  }
+  .pane-entry.active {
+    background: #24283b;
+    border-left-color: #7aa2f7;
+  }
+  .pane-name {
+    font-size: 0.8rem;
+  }
+  .pane-detail {
     display: flex;
     gap: 6px;
-    font-size: 0.72rem;
+    font-size: 0.7rem;
     color: #565f89;
     overflow: hidden;
     white-space: nowrap;
@@ -210,6 +281,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
+    margin-left: auto;
   }
   .port {
     font-size: 0.7rem;

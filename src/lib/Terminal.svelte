@@ -60,8 +60,13 @@
 
     let resizeRaf = 0;
     const doFit = () => {
+      // Hidden workspaces report 0×0; fitting then would shrink the PTY to
+      // a few columns and garble every TUI in the pane. Skip until visible.
+      if (host.clientWidth < 20 || host.clientHeight < 20) return;
       fit.fit();
-      void resizePane(pane, term.cols, term.rows);
+      if (term.cols >= 2 && term.rows >= 2) {
+        void resizePane(pane, term.cols, term.rows);
+      }
     };
     const observer = new ResizeObserver(() => {
       cancelAnimationFrame(resizeRaf);

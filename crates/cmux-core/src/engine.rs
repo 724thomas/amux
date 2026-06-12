@@ -47,6 +47,7 @@ struct Workspaces {
     map: IndexMap<WorkspaceId, WorkspaceState>,
     active: Option<WorkspaceId>,
     created_count: usize,
+    pane_created_count: usize,
 }
 
 pub struct Engine {
@@ -81,8 +82,13 @@ impl Engine {
         cwd: Option<std::path::PathBuf>,
     ) -> Result<Arc<Pane>, EngineError> {
         let id = PaneId::new();
+        let name = {
+            let mut ws = self.workspaces.write();
+            ws.pane_created_count += 1;
+            format!("터미널 {}", ws.pane_created_count)
+        };
         let engine = Arc::downgrade(self);
-        let pane = Pane::spawn(id, workspace, cols, rows, cwd, move || {
+        let pane = Pane::spawn(id, workspace, name, cols, rows, cwd, move || {
             // Shell exited → remove the pane from its layout, like tmux.
             if let Some(engine) = engine.upgrade() {
                 let _ = engine.close_pane(id);
@@ -105,7 +111,7 @@ impl Engine {
         let pane = self.spawn_pane(ws_id, cols, rows, cwd)?;
         let mut ws = self.workspaces.write();
         ws.created_count += 1;
-        let name = name.unwrap_or_else(|| format!("터미널 {}", ws.created_count));
+        let name = name.unwrap_or_else(|| format!("워크스페이스 {}", ws.created_count));
         ws.map.insert(
             ws_id,
             WorkspaceState { name, layout: LayoutNode::Leaf { pane: pane.id }, active_pane: pane.id },
@@ -236,6 +242,12 @@ impl Engine {
         Ok(())
     }
 
+    pub fn rename_pane(&self, id: PaneId, name: String) -> Result<(), EngineError> {
+        *self.pane(id)?.name.lock() = name;
+        self.notify_state_changed();
+        Ok(())
+    }
+
     pub fn focus_pane(&self, id: PaneId) -> Result<(), EngineError> {
         let pane = self.pane(id)?;
         let mut ws = self.workspaces.write();
@@ -313,6 +325,7 @@ impl Engine {
                 .map(|p| PaneInfo {
                     id: p.id,
                     workspace: p.workspace,
+                    name: p.name.lock().clone(),
                     meta: p.meta.lock().clone(),
                     notification: None, // M4
                     exited: p.has_exited(),

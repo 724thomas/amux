@@ -29,6 +29,7 @@ pub fn run() {
             commands::set_ratio,
             commands::split_pane,
             commands::focus_pane,
+            commands::rename_pane,
             commands::write_pane,
             commands::resize_pane,
             commands::close_pane,
@@ -41,6 +42,15 @@ pub fn run() {
             if let Err(e) = engine.create_workspace(None, None, 80, 24) {
                 tracing::error!("initial workspace: {e}");
             }
+            // Automation socket: same engine the UI uses.
+            tauri::async_runtime::spawn({
+                let engine = Arc::clone(&engine);
+                async move {
+                    if let Err(e) = cmux_core::server::run(engine).await {
+                        tracing::error!("socket server: {e}");
+                    }
+                }
+            });
             // Forward engine state changes to the webview as fresh snapshots.
             let handle = app.handle().clone();
             let engine = Arc::clone(&engine);

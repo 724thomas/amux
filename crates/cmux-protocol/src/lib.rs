@@ -99,6 +99,7 @@ pub struct PaneMeta {
 pub struct PaneInfo {
     pub id: PaneId,
     pub workspace: WorkspaceId,
+    pub name: String,
     pub meta: PaneMeta,
     pub notification: Option<PaneNotification>,
     pub exited: bool,
@@ -203,4 +204,154 @@ pub mod env_keys {
     pub const PANE_ID: &str = "CMUX_PANE_ID";
     pub const WORKSPACE_ID: &str = "CMUX_WORKSPACE_ID";
     pub const SOCKET: &str = "CMUX_SOCKET";
+}
+
+// ---------------------------------------------------------------------------
+// RPC method params/results (shared between the server and the CLI)
+// ---------------------------------------------------------------------------
+
+pub mod methods {
+    use serde::{Deserialize, Serialize};
+
+    use crate::SplitAxis;
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct WorkspaceCreateParams {
+        pub name: Option<String>,
+        pub cwd: Option<String>,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct WorkspaceCreateResult {
+        pub workspace: String,
+        pub pane: String,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct WorkspaceRefParams {
+        pub workspace: String,
+    }
+
+    /// `pane` accepts a full UUID or a short prefix (`p-3fa2c1` / `3fa2c1`).
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct PaneRefParams {
+        pub pane: String,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct PaneSplitParams {
+        pub pane: String,
+        pub axis: SplitAxis,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct PaneSplitResult {
+        pub pane: String,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct SendTextParams {
+        pub pane: String,
+        pub text: String,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct SendKeysParams {
+        pub pane: String,
+        pub keys: Vec<String>,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct ReadScreenResult {
+        pub text: String,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct PaneRenameParams {
+        pub pane: String,
+        pub name: String,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct WorkspaceRenameParams {
+        pub workspace: String,
+        pub name: String,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct NotifySetParams {
+        pub pane: Option<String>,
+        pub kind: crate::NotifyKind,
+        pub title: Option<String>,
+        pub body: Option<String>,
+    }
+}
+
+/// tmux-style key name → bytes for the PTY (`Enter`, `C-c`, `Up`, ...).
+/// Single non-special characters pass through literally.
+pub fn key_to_bytes(key: &str) -> Option<Vec<u8>> {
+    let bytes: Vec<u8> = match key {
+        "Enter" | "CR" => b"\r".to_vec(),
+        "Tab" => b"\t".to_vec(),
+        "Escape" | "Esc" => b"\x1b".to_vec(),
+        "Space" => b" ".to_vec(),
+        "BSpace" | "Backspace" => b"\x7f".to_vec(),
+        "Up" => b"\x1b[A".to_vec(),
+        "Down" => b"\x1b[B".to_vec(),
+        "Right" => b"\x1b[C".to_vec(),
+        "Left" => b"\x1b[D".to_vec(),
+        "Home" => b"\x1b[H".to_vec(),
+        "End" => b"\x1b[F".to_vec(),
+        "PageUp" | "PgUp" => b"\x1b[5~".to_vec(),
+        "PageDown" | "PgDn" => b"\x1b[6~".to_vec(),
+        "Delete" | "DC" => b"\x1b[3~".to_vec(),
+        _ => {
+            if let Some(c) = key.strip_prefix("C-").and_then(|r| {
+                let mut chars = r.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) => Some(c),
+                    _ => None,
+                }
+            }) {
+                // Ctrl-letter → control byte (C-c = 0x03).
+                let upper = c.to_ascii_uppercase();
+                if upper.is_ascii_uppercase() || ('@'..='_').contains(&upper) {
+                    vec![(upper as u8) & 0x1f]
+                } else {
+                    return None;
+                }
+            } else if let Some(c) = key.strip_prefix("M-").and_then(|r| {
+                let mut chars = r.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) => Some(c),
+                    _ => None,
+                }
+            }) {
+                // Alt-letter → ESC prefix.
+                let mut v = vec![0x1b];
+                v.extend(c.to_string().into_bytes());
+                v
+            } else if key.chars().count() == 1 {
+                key.as_bytes().to_vec()
+            } else {
+                return None;
+            }
+        }
+    };
+    Some(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_mapping() {
+        assert_eq!(key_to_bytes("Enter").unwrap(), b"\r");
+        assert_eq!(key_to_bytes("C-c").unwrap(), vec![0x03]);
+        assert_eq!(key_to_bytes("Up").unwrap(), b"\x1b[A");
+        assert_eq!(key_to_bytes("a").unwrap(), b"a");
+        assert_eq!(key_to_bytes("M-f").unwrap(), b"\x1bf");
+        assert!(key_to_bytes("NotAKey").is_none());
+    }
 }

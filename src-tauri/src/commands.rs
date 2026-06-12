@@ -88,6 +88,11 @@ pub fn focus_pane(engine: Eng<'_>, pane: PaneId) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn rename_pane(engine: Eng<'_>, pane: PaneId, name: String) -> Result<(), String> {
+    engine.rename_pane(pane, name).map_err(err)
+}
+
+#[tauri::command]
 pub fn write_pane(engine: Eng<'_>, pane: PaneId, data: String) -> Result<(), String> {
     engine.write_pane(pane, data.as_bytes()).map_err(err)
 }
