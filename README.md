@@ -2,8 +2,8 @@
 
 AI 코딩 에이전트(Claude Code 등)를 **병렬로** 돌리기 위한 Ubuntu 데스크톱 터미널.
 
-<스크린샷 1 — 메인 화면 전체: 워크스페이스 2~3개가 사이드바에 보이고, 오른쪽은 2개 이상 분할된 pane. 한 pane에는 Claude Code가 실행 중, 다른 pane에는 빌드/일반 셸. 사이드바에 터미널별 상태 칩·git 브랜치·cwd·포트 칩(:5173 등)이 보이는 상태>
-<!-- ![메인 화면](docs/screenshots/01-overview.png) -->
+<img width="1856" height="1080" alt="image" src="https://github.com/user-attachments/assets/0f635231-9b41-4945-ad60-8dd0414e8d6f" />
+
 
 - 워크스페이스(탭) × 분할 pane — 동시 다중 터미널, 개수 제한 없음
 - 에이전트 상태 칩: 🔴 processing / 🟢 processed / 🔵 idle / 🟡 waiting
