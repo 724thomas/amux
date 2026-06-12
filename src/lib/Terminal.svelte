@@ -73,6 +73,20 @@
           return false;
         }
       }
+      if (e.type === "keydown" && e.ctrlKey && !e.shiftKey && !e.altKey) {
+        // Ctrl+C copies when text is selected; otherwise it stays SIGINT.
+        if (e.code === "KeyC" && term.hasSelection()) {
+          void copySelection().then(() => term.clearSelection());
+          return false;
+        }
+        // Ctrl+V always pastes (readline's literal-next is Ctrl+Shift+V
+        // territory for the rare user who needs it... which we also use
+        // for paste, so literal-next is effectively retired here).
+        if (e.code === "KeyV") {
+          void pasteClipboard();
+          return false;
+        }
+      }
       return !handleKey(e);
     });
     // Linux terminal convention: selecting text copies it.
