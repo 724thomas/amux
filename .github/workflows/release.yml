@@ -14,7 +14,7 @@ jobs:
   build-deb:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Tauri 시스템 의존성 설치
         run: |
