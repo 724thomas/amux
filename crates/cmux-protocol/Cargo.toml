@@ -1,0 +1,11 @@
+[package]
+name = "cmux-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared types and JSON-RPC protocol for cmux-ubuntu"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
