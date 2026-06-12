@@ -233,13 +233,23 @@
     });
 
     let resizeRaf = 0;
+    let wasHidden = true;
     const doFit = () => {
       // Hidden workspaces report 0×0; fitting then would shrink the PTY to
       // a few columns and garble every TUI in the pane. Skip until visible.
-      if (host.clientWidth < 20 || host.clientHeight < 20) return;
+      if (host.clientWidth < 20 || host.clientHeight < 20) {
+        wasHidden = true;
+        return;
+      }
       fit.fit();
       if (term.cols >= 2 && term.rows >= 2) {
         void resizePane(pane, term.cols, term.rows);
+      }
+      if (wasHidden) {
+        // Coming back from display:none the canvas is stale/blank and a
+        // same-size fit() is a no-op, so nothing would repaint it.
+        wasHidden = false;
+        term.refresh(0, term.rows - 1);
       }
     };
     refit = doFit;
