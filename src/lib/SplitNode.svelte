@@ -115,13 +115,13 @@
   }
   .divider {
     flex: 0 0 4px;
-    background: #2a2e42;
+    background: var(--border);
     z-index: 5;
     touch-action: none;
   }
   .divider:hover,
   .divider:active {
-    background: #7aa2f7;
+    background: var(--accent);
   }
   .divider.horizontal {
     cursor: col-resize;

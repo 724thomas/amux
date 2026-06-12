@@ -13,6 +13,7 @@
   import { writePane, resizePane, subscribePane, type PaneId } from "./ipc";
   import { handleKey } from "./keymap";
   import { adjustFontSize, settings } from "./settings.svelte";
+  import { themeById } from "./themes";
   import { paneInfo, registerTermFocus } from "./state.svelte";
 
   export interface MenuAction {
@@ -110,7 +111,7 @@
       scrollback: 10_000,
       fontFamily: "monospace",
       fontSize: settings.fontSize,
-      theme: { background: "#16161e" },
+      theme: themeById(settings.theme).term,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -283,6 +284,12 @@
     }
   });
 
+  // Live theme changes.
+  $effect(() => {
+    const theme = themeById(settings.theme).term;
+    if (term) term.options.theme = theme;
+  });
+
   async function copySelection() {
     const sel = term.getSelection();
     if (sel) await writeText(sel);
@@ -400,7 +407,7 @@
   .terminal-host {
     width: 100%;
     height: 100%;
-    background: #16161e;
+    background: var(--bg);
   }
   .ctx-menu {
     position: fixed;
@@ -409,15 +416,15 @@
     flex-direction: column;
     min-width: 10rem;
     padding: 0.25rem;
-    background: #1f2335;
-    border: 1px solid #3b4261;
+    background: var(--surface-2);
+    border: 1px solid var(--border-2);
     border-radius: 6px;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
   }
   .ctx-menu button {
     padding: 0.4rem 0.75rem;
     text-align: left;
-    color: #c0caf5;
+    color: var(--text);
     background: none;
     border: none;
     border-radius: 4px;
@@ -425,7 +432,7 @@
     font-size: 0.85rem;
   }
   .ctx-menu button:hover:not(:disabled) {
-    background: #3b4261;
+    background: var(--border-2);
   }
   .ctx-menu button:disabled {
     opacity: 0.4;
@@ -434,7 +441,7 @@
   .ctx-menu hr {
     margin: 0.25rem 0.5rem;
     border: none;
-    border-top: 1px solid #3b4261;
+    border-top: 1px solid var(--border-2);
   }
   .search-bar {
     position: absolute;
@@ -444,8 +451,8 @@
     display: flex;
     gap: 2px;
     padding: 3px;
-    background: #1f2335;
-    border: 1px solid #3b4261;
+    background: var(--surface-2);
+    border: 1px solid var(--border-2);
     border-radius: 6px;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
   }
@@ -453,24 +460,24 @@
     width: 11rem;
     padding: 2px 6px;
     font-size: 0.8rem;
-    color: #c0caf5;
-    background: #16161e;
-    border: 1px solid #3b4261;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border-2);
     border-radius: 4px;
   }
   .search-bar input:focus {
     outline: none;
-    border-color: #7aa2f7;
+    border-color: var(--accent);
   }
   .search-bar button {
     width: 22px;
-    color: #c0caf5;
+    color: var(--text);
     background: none;
     border: none;
     border-radius: 4px;
     cursor: pointer;
   }
   .search-bar button:hover {
-    background: #3b4261;
+    background: var(--border-2);
   }
 </style>

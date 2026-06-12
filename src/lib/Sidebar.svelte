@@ -20,7 +20,8 @@
     type WorkspaceInfo,
   } from "./ipc";
   import { app, focusTerm, paneInfo } from "./state.svelte";
-  import { adjustFontSize, settings } from "./settings.svelte";
+  import { adjustFontSize, setTheme, settings } from "./settings.svelte";
+  import { THEMES } from "./themes";
 
   const snapshot = $derived(app.snapshot);
 
@@ -125,9 +126,9 @@
   class="sidebar"
   onmousedown={(e) => {
     // Sidebar buttons must not steal the keyboard from the terminal.
-    // Inputs (rename) and draggables (workspace reorder) keep defaults.
+    // Inputs (rename), selects (theme) and draggables keep defaults.
     const t = e.target as HTMLElement;
-    if (t.closest("input") || t.closest('[draggable="true"]')) return;
+    if (t.closest("input, select") || t.closest('[draggable="true"]')) return;
     e.preventDefault();
   }}
 >
@@ -252,6 +253,18 @@
     </ul>
   </div>
 
+  <div class="theme-control" title="색 테마">
+    <span class="font-label">테마</span>
+    <select
+      value={settings.theme}
+      onchange={(e) => setTheme((e.currentTarget as HTMLSelectElement).value)}
+    >
+      {#each THEMES as t (t.id)}
+        <option value={t.id}>{t.name}</option>
+      {/each}
+    </select>
+  </div>
+
   <div class="font-control" title="글꼴 크기 (Ctrl+= / Ctrl+- / Ctrl+휠)">
     <span class="font-label">Aa</span>
     <button onclick={() => adjustFontSize(-1)}>−</button>
@@ -275,7 +288,7 @@
     display: flex;
     flex-direction: column;
     width: 100%;
-    background: #1a1b26;
+    background: var(--surface);
     overflow-y: auto;
   }
   ul {
@@ -290,7 +303,7 @@
     display: flex;
     flex-direction: column;
     max-height: 40%;
-    border-top: 1px solid #2a2e42;
+    border-top: 1px solid var(--border);
   }
   .notif-head {
     display: flex;
@@ -299,17 +312,17 @@
     padding: 6px 10px 4px;
     font-size: 0.75rem;
     font-weight: 700;
-    color: #565f89;
+    color: var(--muted);
   }
   .notif-clear {
     font-size: 0.7rem;
-    color: #565f89;
+    color: var(--muted);
     background: none;
     border: none;
     cursor: pointer;
   }
   .notif-clear:hover {
-    color: #c0caf5;
+    color: var(--text);
   }
   .notif-list {
     overflow-y: auto;
@@ -317,7 +330,7 @@
   .notif-empty {
     padding: 4px 10px 8px;
     font-size: 0.72rem;
-    color: #3b4261;
+    color: var(--border-2);
   }
   .notif-entry {
     display: flex;
@@ -331,7 +344,7 @@
     cursor: pointer;
   }
   .notif-entry:hover {
-    background: #1f2335;
+    background: var(--surface-2);
   }
   .notif-line {
     display: flex;
@@ -340,25 +353,25 @@
     font-size: 0.72rem;
   }
   .notif-icon.attention {
-    color: #f7768e;
+    color: var(--red);
   }
   .notif-icon.done {
-    color: #9ece6a;
+    color: var(--green);
   }
   .notif-icon.bell {
-    color: #e0af68;
+    color: var(--yellow);
   }
   .notif-pane {
-    color: #a9b1d6;
+    color: var(--text-2);
     font-weight: 600;
   }
   .notif-time {
     margin-left: auto;
-    color: #3b4261;
+    color: var(--border-2);
   }
   .notif-msg {
     font-size: 0.72rem;
-    color: #7dcfff;
+    color: var(--info);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -370,17 +383,17 @@
     width: 100%;
     padding: 8px 10px 4px;
     text-align: left;
-    color: #c0caf5;
+    color: var(--text);
     background: none;
     border: none;
     border-left: 3px solid transparent;
     cursor: pointer;
   }
   .entry:hover {
-    background: #1f2335;
+    background: var(--surface-2);
   }
   .entry.active {
-    border-left-color: #7aa2f7;
+    border-left-color: var(--accent);
   }
   .name {
     font-size: 0.85rem;
@@ -392,9 +405,9 @@
   .rename {
     width: 100%;
     font-size: 0.8rem;
-    color: #c0caf5;
-    background: #16161e;
-    border: 1px solid #7aa2f7;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--accent);
     border-radius: 4px;
     padding: 1px 4px;
   }
@@ -408,18 +421,18 @@
     width: 100%;
     padding: 4px 10px 4px 22px;
     text-align: left;
-    color: #a9b1d6;
+    color: var(--text-2);
     background: none;
     border: none;
     border-left: 3px solid transparent;
     cursor: pointer;
   }
   .pane-entry:hover {
-    background: #1f2335;
+    background: var(--surface-2);
   }
   .pane-entry.active {
-    background: #24283b;
-    border-left-color: #7aa2f7;
+    background: var(--surface-3);
+    border-left-color: var(--accent);
   }
   .pane-name {
     font-size: 0.8rem;
@@ -431,7 +444,7 @@
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: #7dcfff;
+    background: var(--info);
     flex-shrink: 0;
   }
   .status {
@@ -442,24 +455,24 @@
     font-weight: 600;
   }
   .status.processing {
-    color: #f7768e;
-    background: rgba(247, 118, 142, 0.15);
+    color: var(--red);
+    background: color-mix(in srgb, var(--red) 15%, transparent);
   }
   .status.processed {
-    color: #9ece6a;
-    background: rgba(158, 206, 106, 0.15);
+    color: var(--green);
+    background: color-mix(in srgb, var(--green) 15%, transparent);
   }
   .status.idle {
-    color: #7aa2f7;
-    background: rgba(122, 162, 247, 0.15);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
   }
   .status.waiting {
-    color: #e0af68;
-    background: rgba(224, 175, 104, 0.15);
+    color: var(--yellow);
+    background: color-mix(in srgb, var(--yellow) 15%, transparent);
   }
   .notif-text {
     font-size: 0.7rem;
-    color: #7dcfff;
+    color: var(--info);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -468,12 +481,12 @@
     display: flex;
     gap: 6px;
     font-size: 0.7rem;
-    color: #565f89;
+    color: var(--muted);
     overflow: hidden;
     white-space: nowrap;
   }
   .branch {
-    color: #9ece6a;
+    color: var(--green);
     flex-shrink: 0;
   }
   .cwd {
@@ -489,26 +502,46 @@
   .port {
     font-size: 0.7rem;
     padding: 0 5px;
-    color: #7dcfff;
-    background: rgba(125, 207, 255, 0.12);
-    border: 1px solid rgba(125, 207, 255, 0.35);
+    color: var(--info);
+    background: color-mix(in srgb, var(--info) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--info) 35%, transparent);
     border-radius: 8px;
   }
   .port:hover {
-    background: rgba(125, 207, 255, 0.3);
+    background: color-mix(in srgb, var(--info) 30%, transparent);
   }
   .add {
     margin: 8px;
     padding: 7px;
     font-size: 0.8rem;
-    color: #c0caf5;
-    background: #24283b;
-    border: 1px dashed #3b4261;
+    color: var(--text);
+    background: var(--surface-3);
+    border: 1px dashed var(--border-2);
     border-radius: 6px;
     cursor: pointer;
   }
   .add:hover {
-    background: #2f334d;
+    background: var(--surface-4);
+  }
+  .theme-control {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px 2px;
+    font-size: 0.75rem;
+    color: var(--muted);
+    border-top: 1px solid var(--border);
+  }
+  .theme-control select {
+    flex: 1;
+    min-width: 0;
+    padding: 2px 4px;
+    font-size: 0.75rem;
+    color: var(--text);
+    background: var(--surface-3);
+    border: 1px solid var(--border-2);
+    border-radius: 4px;
+    cursor: pointer;
   }
   .font-control {
     display: flex;
@@ -516,7 +549,7 @@
     gap: 6px;
     padding: 4px 10px 10px;
     font-size: 0.75rem;
-    color: #565f89;
+    color: var(--muted);
   }
   .font-label {
     margin-right: auto;
@@ -524,20 +557,20 @@
   .font-size {
     min-width: 34px;
     text-align: center;
-    color: #a9b1d6;
+    color: var(--text-2);
   }
   .font-control button {
     width: 22px;
     height: 20px;
-    color: #c0caf5;
-    background: #24283b;
-    border: 1px solid #3b4261;
+    color: var(--text);
+    background: var(--surface-3);
+    border: 1px solid var(--border-2);
     border-radius: 4px;
     cursor: pointer;
     line-height: 1;
   }
   .font-control button:hover {
-    background: #3b4261;
+    background: var(--border-2);
   }
   .ctx-menu {
     position: fixed;
@@ -546,15 +579,15 @@
     flex-direction: column;
     min-width: 10rem;
     padding: 0.25rem;
-    background: #1f2335;
-    border: 1px solid #3b4261;
+    background: var(--surface-2);
+    border: 1px solid var(--border-2);
     border-radius: 6px;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
   }
   .ctx-menu button {
     padding: 0.4rem 0.75rem;
     text-align: left;
-    color: #c0caf5;
+    color: var(--text);
     background: none;
     border: none;
     border-radius: 4px;
@@ -562,6 +595,6 @@
     font-size: 0.85rem;
   }
   .ctx-menu button:hover {
-    background: #3b4261;
+    background: var(--border-2);
   }
 </style>

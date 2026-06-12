@@ -114,11 +114,11 @@
     height: 100%;
     min-width: 0;
     min-height: 0;
-    outline: 1px solid #2a2e42;
+    outline: 1px solid var(--border);
     outline-offset: -1px;
   }
   .pane.focused {
-    outline: 1px solid #7aa2f7;
+    outline: 1px solid var(--accent);
     z-index: 1;
   }
   .pane.ringing {
@@ -131,7 +131,7 @@
       outline-offset: -2px;
     }
     50% {
-      outline: 2px solid #7dcfff;
+      outline: 2px solid var(--info);
       outline-offset: -2px;
     }
   }
@@ -142,14 +142,14 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #7dcfff;
+    background: var(--info);
     z-index: 10;
   }
   .drop-overlay {
     position: absolute;
     z-index: 15;
-    background: rgba(122, 162, 247, 0.25);
-    border: 2px solid #7aa2f7;
+    background: color-mix(in srgb, var(--accent) 25%, transparent);
+    border: 2px solid var(--accent);
     pointer-events: none;
   }
   .drop-overlay.left {
@@ -171,8 +171,8 @@
     display: none;
     gap: 2px;
     padding: 2px;
-    background: rgba(31, 35, 53, 0.9);
-    border: 1px solid #3b4261;
+    background: color-mix(in srgb, var(--surface-2) 90%, transparent);
+    border: 1px solid var(--border-2);
     border-radius: 6px;
     z-index: 10;
   }
@@ -182,7 +182,7 @@
   .toolbar button {
     width: 24px;
     height: 22px;
-    color: #c0caf5;
+    color: var(--text);
     background: none;
     border: none;
     border-radius: 4px;
@@ -191,13 +191,13 @@
     line-height: 1;
   }
   .toolbar button:hover {
-    background: #3b4261;
+    background: var(--border-2);
   }
   .toolbar .drag-handle {
     cursor: grab;
   }
   .toolbar button.close:hover {
-    background: #f7768e;
-    color: #16161e;
+    background: var(--red);
+    color: var(--bg);
   }
 </style>

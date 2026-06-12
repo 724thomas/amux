@@ -1,3 +1,23 @@
+/* Theme variables — Tokyo Night defaults; themes.ts overrides them on
+   :root at runtime. Components must only use var(--...) colors. */
+:root {
+  --bg: #16161e;
+  --surface: #1a1b26;
+  --surface-2: #1f2335;
+  --surface-3: #24283b;
+  --surface-4: #2f334d;
+  --border: #2a2e42;
+  --border-2: #3b4261;
+  --text: #c0caf5;
+  --text-2: #a9b1d6;
+  --muted: #565f89;
+  --accent: #7aa2f7;
+  --info: #7dcfff;
+  --red: #f7768e;
+  --green: #9ece6a;
+  --yellow: #e0af68;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -10,7 +30,7 @@ body,
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #16161e;
+  background: var(--bg);
   font-family: system-ui, sans-serif;
   user-select: none;
 }

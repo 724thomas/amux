@@ -1,14 +1,14 @@
 // User-tweakable UI settings, applied live and persisted in localStorage.
-// (M5 moves persistence to config.toml; the live-application path stays.)
 
 const KEY = "cmux.settings";
 
 interface Settings {
   fontSize: number;
   sidebarWidth: number;
+  theme: string;
 }
 
-const DEFAULTS: Settings = { fontSize: 14, sidebarWidth: 230 };
+const DEFAULTS: Settings = { fontSize: 14, sidebarWidth: 230, theme: "tokyo-night" };
 
 function load(): Settings {
   try {
@@ -39,5 +39,10 @@ export function resetFontSize() {
 
 export function setSidebarWidth(width: number) {
   settings.sidebarWidth = Math.min(480, Math.max(140, Math.round(width)));
+  save();
+}
+
+export function setTheme(id: string) {
+  settings.theme = id;
   save();
 }

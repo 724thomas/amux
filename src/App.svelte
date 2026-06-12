@@ -5,6 +5,7 @@
   import { app, initState } from "./lib/state.svelte";
   import { handleKey } from "./lib/keymap";
   import { setSidebarWidth, settings } from "./lib/settings.svelte";
+  import { themeById } from "./lib/themes";
 
   const snapshot = $derived(app.snapshot);
 
@@ -12,6 +13,14 @@
 
   onMount(() => {
     void initState();
+  });
+
+  // Theme: app chrome colors live as CSS variables on :root.
+  $effect(() => {
+    const { chrome } = themeById(settings.theme);
+    for (const [key, value] of Object.entries(chrome)) {
+      document.documentElement.style.setProperty(key, value);
+    }
   });
 </script>
 
@@ -63,7 +72,7 @@
     display: flex;
     width: 100vw;
     height: 100vh;
-    background: #16161e;
+    background: var(--bg);
   }
   .sidebar-wrap {
     flex-shrink: 0;
@@ -73,12 +82,12 @@
   .sidebar-resizer {
     flex: 0 0 4px;
     cursor: col-resize;
-    background: #2a2e42;
+    background: var(--border);
     touch-action: none;
   }
   .sidebar-resizer:hover,
   .sidebar-resizer.dragging {
-    background: #7aa2f7;
+    background: var(--accent);
   }
   .main {
     position: relative;
