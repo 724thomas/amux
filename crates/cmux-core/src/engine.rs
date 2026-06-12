@@ -295,8 +295,10 @@ impl Engine {
             && ws.map.get(&pane.workspace).is_some_and(|s| s.active_pane == id)
     }
 
-    /// Notification pipeline shared by OSC detection, idle detection, and
-    /// the socket API. `Idle` is a quiet kind: sidebar badge only.
+    /// Notification pipeline shared by OSC detection, lifecycle hooks, and
+    /// the socket API. Status side-effects always apply; the noisy parts
+    /// (badge, desktop notification, ring, history) are suppressed when the
+    /// user is already looking at the pane.
     pub fn notify_pane(
         &self,
         id: PaneId,
@@ -304,22 +306,48 @@ impl Engine {
         title: Option<String>,
         body: Option<String>,
     ) {
-        // The user is already looking at this pane — nothing to announce.
-        if self.pane_visible_and_focused(id) {
+        let Ok(pane) = self.pane(id) else { return };
+        let visible = self.pane_visible_and_focused(id);
+
+        // Status side-effects per kind:
+        // - attention/bell → the app waits for the user
+        // - progress (UserPromptSubmit hook) → work started; quiet signal
+        // - done (Stop hook) → work finished
+        // progress/done mark the pane hook-managed: lifecycle hooks are
+        // authoritative from then on, the silence heuristic stands down.
+        match kind {
+            NotifyKind::Attention | NotifyKind::Bell => {
+                *pane.waiting_since.lock() = Some(std::time::Instant::now());
+                *pane.status.lock() = PaneStatus::Waiting;
+            }
+            NotifyKind::Progress => {
+                pane.hook_managed.store(true, Ordering::SeqCst);
+                *pane.waiting_since.lock() = None;
+                *pane.status.lock() = PaneStatus::Processing;
+                self.notify_state_changed();
+                return; // quiet: no desktop notification, no ring, no history
+            }
+            NotifyKind::Done => {
+                pane.hook_managed.store(true, Ordering::SeqCst);
+                *pane.waiting_since.lock() = None;
+                *pane.status.lock() =
+                    if visible { PaneStatus::Idle } else { PaneStatus::Processed };
+            }
+            NotifyKind::Idle => {}
+        }
+
+        // The user is already looking at this pane — announce nothing.
+        if visible {
+            self.notify_state_changed();
             return;
         }
-        let Ok(pane) = self.pane(id) else { return };
+
         let title = title.unwrap_or_else(|| crate::notify::default_title(kind).to_string());
         *pane.notification.lock() = Some(PaneNotification {
             kind,
             title: Some(title.clone()),
             body: body.clone(),
         });
-        // Attention/bell signals mean "the app is waiting for the user".
-        if matches!(kind, NotifyKind::Attention | NotifyKind::Bell) {
-            *pane.waiting_since.lock() = Some(std::time::Instant::now());
-            *pane.status.lock() = PaneStatus::Waiting;
-        }
         if kind != NotifyKind::Idle {
             crate::notify::send_desktop(kind, &title, body.as_deref().unwrap_or(""));
             let _ = self.events.send(EngineEvent::PaneRing(id));
@@ -555,19 +583,38 @@ impl Engine {
             fg.is_some() && fg != pane.child_pid()
         };
 
-        // A waiting signal is consumed once output resumed after it.
+        let hook_managed = pane.hook_managed.load(Ordering::SeqCst);
+        let mut status = pane.status.lock();
+        let old = *status;
+
+        // Lifecycle hooks own the status while the app runs: TUIs like
+        // Claude Code repaint constantly, so the silence heuristic below
+        // would pin them at `processing` forever. Waiting resolves via the
+        // next progress/done hook, not via output.
+        if hook_managed {
+            let new = if !app_running {
+                pane.hook_managed.store(false, Ordering::SeqCst);
+                *pane.waiting_since.lock() = None;
+                PaneStatus::None
+            } else {
+                old
+            };
+            *status = new;
+            return old != new;
+        }
+
+        // Heuristic path: a waiting signal is consumed once output resumed
+        // (2s grace — TUIs repaint while *showing* the prompt too).
         {
             let mut waiting = pane.waiting_since.lock();
             if let Some(since) = *waiting {
-                if activity.last_output > since {
+                if activity.last_output > since + Duration::from_secs(2) {
                     *waiting = None;
                 }
             }
         }
         let waiting = pane.waiting_since.lock().is_some();
 
-        let mut status = pane.status.lock();
-        let old = *status;
         let new = if !app_running {
             PaneStatus::None
         } else if waiting {

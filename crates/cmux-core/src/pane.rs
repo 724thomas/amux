@@ -46,6 +46,10 @@ pub struct Pane {
     /// Set when a waiting-for-input signal (hook/bell) arrives; cleared by
     /// the sweeper once output resumes after that instant.
     pub waiting_since: Mutex<Option<std::time::Instant>>,
+    /// True once lifecycle hooks (progress/done) drive this pane's status —
+    /// the silence heuristic then stands down (TUIs like Claude Code repaint
+    /// constantly, so silence never happens). Reset when the app exits.
+    pub hook_managed: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Clone, Copy)]
@@ -121,6 +125,7 @@ impl Pane {
             activity: Mutex::new(Activity::default()),
             status: Mutex::new(PaneStatus::None),
             waiting_since: Mutex::new(None),
+            hook_managed: std::sync::atomic::AtomicBool::new(false),
         });
 
         // Reader thread: PTY → term state → tail buffer → sink.

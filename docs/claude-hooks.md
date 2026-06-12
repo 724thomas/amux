@@ -1,46 +1,55 @@
-# Claude Code 알림 연동
+# Claude Code 알림·상태 연동
 
 cmux pane 안에서 실행되는 모든 프로세스는 `CMUX_PANE_ID` / `CMUX_SOCKET` 환경
 변수를 물려받으므로, Claude Code hook에서 `cmux notify`를 그대로 호출하면
 자기 pane을 알아서 찾아갑니다.
 
-## 설정
+## 설치 (권장)
 
-`~/.claude/settings.json`에 추가:
+```bash
+python3 scripts/install-claude-hooks.py
+```
+
+또는 `~/.claude/settings.json`에 직접 추가:
 
 ```json
 {
   "hooks": {
+    "UserPromptSubmit": [
+      { "matcher": "", "hooks": [
+        { "type": "command", "command": "cmux notify --kind progress 2>/dev/null || true" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "", "hooks": [
+        { "type": "command", "command": "cmux notify --kind progress 2>/dev/null || true" } ] }
+    ],
     "Notification": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cmux notify --kind attention --from-claude-hook"
-          }
-        ]
-      }
+      { "matcher": "", "hooks": [
+        { "type": "command", "command": "cmux notify --kind attention --from-claude-hook 2>/dev/null || true" } ] }
     ],
     "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cmux notify --kind done --title 'Claude Code' --body '작업이 끝났습니다'"
-          }
-        ]
-      }
+      { "matcher": "", "hooks": [
+        { "type": "command", "command": "cmux notify --kind done --title 'Claude Code' --body '작업이 끝났습니다' 2>/dev/null || true" } ] }
     ]
   }
 }
 ```
 
-- **Notification hook**: Claude가 권한 승인 등 입력을 기다릴 때 발화.
-  `--from-claude-hook`이 hook의 JSON 페이로드(stdin)에서 메시지를 직접
-  추출하므로 `jq`가 필요 없습니다.
-- **Stop hook**: Claude의 응답이 끝났을 때 발화.
+## 상태 매핑
+
+Claude Code 같은 TUI는 대기 중에도 화면을 계속 다시 그리므로 출력 침묵
+휴리스틱이 통하지 않습니다. hook이 한 번이라도 발화한 pane은 hook이 상태의
+단일 소스가 됩니다:
+
+| hook | cmux 상태 | 색 |
+|---|---|---|
+| UserPromptSubmit / PostToolUse | processing… | 빨강 |
+| Stop | processed → (열람 후) idle | 초록 → 파랑 |
+| Notification (권한/질문 대기) | waiting | 노랑 |
+
+- **Notification hook**: `--from-claude-hook`이 hook의 JSON 페이로드(stdin)
+  에서 메시지를 직접 추출하므로 `jq`가 필요 없습니다.
+- hook이 없는 pane은 출력 휴리스틱(2초+ 출력 후 10초 침묵)으로 동작합니다.
 
 ## 동작
 
