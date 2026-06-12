@@ -12,6 +12,7 @@
   import { writePane, resizePane, subscribePane, type PaneId } from "./ipc";
   import { handleKey } from "./keymap";
   import { adjustFontSize, settings } from "./settings.svelte";
+  import { paneInfo } from "./state.svelte";
 
   export interface MenuAction {
     label: string;
@@ -28,6 +29,38 @@
   let menu = $state<{ x: number; y: number } | null>(null);
   let term = $state<Terminal>()!;
   let refit: (() => void) | undefined;
+
+  // kitty keyboard protocol state of the app in this pane (e.g. Claude Code).
+  // When active, the app wants shift+arrows itself (input highlighting) and
+  // the CSI-u encodings for Esc / modified Enter.
+  const kitty = $derived(paneInfo(pane)?.meta.kitty_keyboard === true);
+
+  // Terminal-level keyboard selection (for apps without kitty protocol):
+  // shift+arrow extends a visual selection anchored at the cursor.
+  let kbSel: { anchor: number; extent: number } | null = null;
+
+  function extendKeyboardSelection(key: string) {
+    const buf = term.buffer.active;
+    const cols = term.cols;
+    if (!kbSel) {
+      const cursor = (buf.baseY + buf.cursorY) * cols + buf.cursorX;
+      kbSel = { anchor: cursor, extent: cursor };
+    }
+    const delta =
+      key === "ArrowLeft" ? -1 : key === "ArrowRight" ? 1 : key === "ArrowUp" ? -cols : cols;
+    const max = buf.length * cols - 1;
+    kbSel.extent = Math.min(max, Math.max(0, kbSel.extent + delta));
+    const start = Math.min(kbSel.anchor, kbSel.extent);
+    const end = Math.max(kbSel.anchor, kbSel.extent);
+    term.select(start % cols, Math.floor(start / cols), Math.max(1, end - start));
+  }
+
+  function clearKeyboardSelection() {
+    if (kbSel) {
+      kbSel = null;
+      term.clearSelection();
+    }
+  }
 
   onMount(() => {
     term = new Terminal({
@@ -49,8 +82,8 @@
     // App shortcuts (split/navigate/...) win over the terminal; everything
     // else (Ctrl+C, Tab, F-keys...) flows through to the shell untouched.
     term.attachCustomKeyEventHandler((e) => {
-      // Shift+Enter → ESC+CR: Claude Code 등 TUI가 제출 대신 줄바꿈으로
-      // 해석하는 시퀀스 (iTerm2 /terminal-setup과 동일한 매핑).
+      // Shift+Enter → 줄바꿈: kitty 모드 앱(Claude Code)에는 CSI-u 인코딩,
+      // 그 외에는 ESC+CR (iTerm2 /terminal-setup과 동일한 매핑).
       if (
         e.type === "keydown" &&
         e.key === "Enter" &&
@@ -58,7 +91,32 @@
         !e.ctrlKey &&
         !e.altKey
       ) {
-        void writePane(pane, "\x1b\r");
+        void writePane(pane, kitty ? "\x1b[13;2u" : "\x1b\r");
+        return false;
+      }
+      // kitty 모드에서 plain Esc는 CSI 27u로 보고해야 함 (프로토콜 규약).
+      if (
+        e.type === "keydown" &&
+        e.key === "Escape" &&
+        kitty &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        void writePane(pane, "\x1b[27u");
+        return false;
+      }
+      // Shift+방향키 → 터미널 키보드 선택 (커서 기준 하이라이트 확장,
+      // copy-on-select로 자동 복사). Claude Code는 입력창 키보드 선택이
+      // 아직 없으므로(anthropics/claude-code#23396) 항상 터미널이 갖는다.
+      if (
+        e.type === "keydown" &&
+        e.shiftKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        e.key.startsWith("Arrow")
+      ) {
+        extendKeyboardSelection(e.key);
         return false;
       }
       if (e.type === "keydown" && e.ctrlKey && e.shiftKey && !e.altKey) {
@@ -107,7 +165,10 @@
     }
 
     const channel = subscribePane(pane, (chunk) => term.write(chunk));
-    term.onData((data) => void writePane(pane, data));
+    term.onData((data) => {
+      clearKeyboardSelection();
+      void writePane(pane, data);
+    });
 
     let resizeRaf = 0;
     const doFit = () => {

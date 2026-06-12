@@ -112,7 +112,11 @@ impl Pane {
                             Ok(0) | Err(_) => break,
                             Ok(n) => {
                                 let chunk = &buf[..n];
-                                pane.term.advance(chunk);
+                                // Terminal replies (kitty keyboard mode reports)
+                                // go straight back to the application.
+                                for reply in pane.term.advance(chunk) {
+                                    let _ = pane.write(reply.as_bytes());
+                                }
                                 for event in osc.advance(chunk) {
                                     on_osc(event);
                                 }

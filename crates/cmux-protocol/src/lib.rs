@@ -93,6 +93,9 @@ pub struct PaneMeta {
     pub git_branch: Option<String>,
     pub listening_ports: Vec<u16>,
     pub title: Option<String>,
+    /// kitty keyboard protocol (disambiguate) active — the frontend switches
+    /// key encodings (Esc, modified Enter) and shift+arrow passthrough on it.
+    pub kitty_keyboard: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

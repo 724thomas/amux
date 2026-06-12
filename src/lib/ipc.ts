@@ -10,6 +10,7 @@ export interface PaneMeta {
   git_branch: string | null;
   listening_ports: number[];
   title: string | null;
+  kitty_keyboard: boolean;
 }
 
 export interface PaneNotification {

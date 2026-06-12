@@ -17,6 +17,14 @@ pub fn compute(pane: &Pane) -> PaneMeta {
     // *right now* in the pane, so `cd` inside the shell and TUI apps both
     // resolve to the directory the user would expect.
     let fg_pid = pane.shell_pid();
+
+    // Stale kitty-mode guard: if the shell itself is foreground again but a
+    // killed app left the kitty keyboard mode pushed, pop it — otherwise the
+    // frontend keeps sending CSI-u encodings the shell can't read.
+    if pane.term.kitty_keyboard_active() && fg_pid == pane.child_pid() {
+        pane.term.reset_kitty_keyboard();
+    }
+
     let cwd = fg_pid.and_then(cwd::process_cwd);
     let git_branch = cwd.as_deref().and_then(git::branch_for);
     let listening_ports = pane
@@ -28,5 +36,6 @@ pub fn compute(pane: &Pane) -> PaneMeta {
         git_branch,
         listening_ports,
         title: None, // OSC 0/2 titles land in M5
+        kitty_keyboard: pane.term.kitty_keyboard_active(),
     }
 }
