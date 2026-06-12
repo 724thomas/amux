@@ -171,6 +171,8 @@
           return false;
         }
         if (e.code === "KeyV") {
+          // 브라우저 네이티브 paste가 한 번 더 붙는 것 방지
+          e.preventDefault();
           void pasteClipboard();
           return false;
         }
@@ -199,6 +201,8 @@
         // territory for the rare user who needs it... which we also use
         // for paste, so literal-next is effectively retired here).
         if (e.code === "KeyV") {
+          // 브라우저 네이티브 paste가 한 번 더 붙는 것 방지
+          e.preventDefault();
           void pasteClipboard();
           return false;
         }
@@ -329,6 +333,12 @@
       e.preventDefault();
       void pasteClipboard();
     }
+  }}
+  onpastecapture={(e) => {
+    // 네이티브 paste 경로 차단 — 붙여넣기는 항상 우리(Rust 클립보드)
+    // 경로 하나로만 들어와 이중 붙여넣기를 방지.
+    e.preventDefault();
+    e.stopPropagation();
   }}
 ></div>
 
