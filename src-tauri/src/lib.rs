@@ -59,10 +59,27 @@ pub fn run() {
             let engine = Arc::clone(&engine);
             tauri::async_runtime::spawn(async move {
                 let mut events = engine.subscribe();
+                // Dock icon badge = processed (finished, not yet seen) count.
+                // Rendered by Ubuntu Dock via the Unity LauncherEntry D-Bus
+                // API; harmless no-op on desktops without a dock.
+                let mut badge = i64::MIN; // sentinel: always set on first event
                 while let Ok(event) = events.recv().await {
                     match event {
                         EngineEvent::StateChanged => {
-                            let _ = handle.emit("state:snapshot", engine.snapshot());
+                            let snapshot = engine.snapshot();
+                            let processed = snapshot
+                                .panes
+                                .iter()
+                                .filter(|p| p.status == amux_protocol::PaneStatus::Processed)
+                                .count() as i64;
+                            if processed != badge {
+                                badge = processed;
+                                if let Some(window) = handle.webview_windows().values().next() {
+                                    let _ = window
+                                        .set_badge_count((processed > 0).then_some(processed));
+                                }
+                            }
+                            let _ = handle.emit("state:snapshot", snapshot);
                         }
                         EngineEvent::PaneRing(pane) => {
                             let _ = handle.emit("notify:ring", pane);
