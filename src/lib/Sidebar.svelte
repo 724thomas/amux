@@ -19,7 +19,7 @@
     type WorkspaceId,
     type WorkspaceInfo,
   } from "./ipc";
-  import { app, paneInfo } from "./state.svelte";
+  import { app, focusTerm, paneInfo } from "./state.svelte";
   import { adjustFontSize, settings } from "./settings.svelte";
 
   const snapshot = $derived(app.snapshot);
@@ -120,7 +120,17 @@
 
 <svelte:window onclick={() => (menu = null)} />
 
-<nav class="sidebar">
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<nav
+  class="sidebar"
+  onmousedown={(e) => {
+    // Sidebar buttons must not steal the keyboard from the terminal.
+    // Inputs (rename) and draggables (workspace reorder) keep defaults.
+    const t = e.target as HTMLElement;
+    if (t.closest("input") || t.closest('[draggable="true"]')) return;
+    e.preventDefault();
+  }}
+>
   <ul class="workspaces">
     {#each snapshot?.workspaces ?? [] as ws, index (ws.id)}
       {@const ports = wsPorts(ws)}
@@ -130,7 +140,12 @@
           class="entry"
           class:active={isActiveWs}
           draggable={renaming?.id !== ws.id}
-          onclick={() => void focusWorkspace(ws.id)}
+          onclick={() => {
+            void focusWorkspace(ws.id);
+            // Already-active workspace: no snapshot change will arrive, so
+            // hand the keyboard to its terminal right now.
+            focusTerm(ws.active_pane);
+          }}
           oncontextmenu={(e) => openMenu(e, { kind: "workspace", id: ws.id, name: ws.name })}
           ondragstart={() => (draggedId = ws.id)}
           ondragover={(e) => e.preventDefault()}
@@ -172,7 +187,10 @@
               <button
                 class="pane-entry"
                 class:active={isActiveWs && paneId === ws.active_pane}
-                onclick={() => void focusPane(paneId)}
+                onclick={() => {
+                  void focusPane(paneId);
+                  focusTerm(paneId);
+                }}
                 oncontextmenu={(e) =>
                   openMenu(e, { kind: "pane", id: paneId, name: pane?.name ?? "" })}
               >

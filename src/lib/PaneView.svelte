@@ -82,13 +82,26 @@
     >
       ⠿
     </button>
-    <button title="오른쪽으로 분할 (Ctrl+Shift+D)" onclick={() => void splitPane(pane, "horizontal")}>
+    <button
+      title="오른쪽으로 분할 (Ctrl+Shift+D)"
+      onmousedown={(e) => e.preventDefault()}
+      onclick={() => void splitPane(pane, "horizontal")}
+    >
       ◫
     </button>
-    <button title="아래로 분할 (Ctrl+Shift+S)" onclick={() => void splitPane(pane, "vertical")}>
+    <button
+      title="아래로 분할 (Ctrl+Shift+S)"
+      onmousedown={(e) => e.preventDefault()}
+      onclick={() => void splitPane(pane, "vertical")}
+    >
       ⬓
     </button>
-    <button title="Pane 닫기 (Ctrl+Shift+W)" class="close" onclick={() => void closePane(pane)}>
+    <button
+      title="Pane 닫기 (Ctrl+Shift+W)"
+      class="close"
+      onmousedown={(e) => e.preventDefault()}
+      onclick={() => void closePane(pane)}
+    >
       ✕
     </button>
   </div>

@@ -13,7 +13,7 @@
   import { writePane, resizePane, subscribePane, type PaneId } from "./ipc";
   import { handleKey } from "./keymap";
   import { adjustFontSize, settings } from "./settings.svelte";
-  import { paneInfo } from "./state.svelte";
+  import { paneInfo, registerTermFocus } from "./state.svelte";
 
   export interface MenuAction {
     label: string;
@@ -260,8 +260,10 @@
     observer.observe(host);
     doFit();
     if (focused) term.focus();
+    const unregisterFocus = registerTermFocus(pane, () => term.focus());
 
     return () => {
+      unregisterFocus();
       observer.disconnect();
       channel.onmessage = () => {};
       term.dispose();
