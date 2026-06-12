@@ -45,10 +45,20 @@ export interface WorkspaceInfo {
   active_pane: PaneId | null;
 }
 
+export interface NotificationEntry {
+  pane: PaneId;
+  pane_name: string;
+  kind: PaneNotification["kind"];
+  title: string | null;
+  body: string | null;
+  at_ms: number;
+}
+
 export interface Snapshot {
   workspaces: WorkspaceInfo[];
   panes: PaneInfo[];
   active_workspace: WorkspaceId | null;
+  notifications: NotificationEntry[];
 }
 
 export const getSnapshot = () => invoke<Snapshot>("get_snapshot");
@@ -82,6 +92,12 @@ export const focusPane = (pane: PaneId) => invoke<void>("focus_pane", { pane });
 
 export const renamePane = (pane: PaneId, name: string) =>
   invoke<void>("rename_pane", { pane, name });
+
+export const movePane = (pane: PaneId, target: PaneId, axis: SplitAxis, before: boolean) =>
+  invoke<void>("move_pane", { pane, target, axis, before });
+
+export const clearNotificationHistory = () =>
+  invoke<void>("clear_notification_history");
 
 export const writePane = (pane: PaneId, data: string) =>
   invoke<void>("write_pane", { pane, data });

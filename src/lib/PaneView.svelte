@@ -1,8 +1,8 @@
 <script lang="ts">
   // One terminal pane: click-to-focus, focus ring, hover toolbar,
-  // and pane actions merged into the terminal's context menu.
+  // pane actions in the terminal's context menu, drag-rearrange.
   import Terminal from "./Terminal.svelte";
-  import { closePane, focusPane, splitPane, type PaneId } from "./ipc";
+  import { closePane, focusPane, movePane, splitPane, type PaneId, type SplitAxis } from "./ipc";
   import { paneInfo, rings } from "./state.svelte";
 
   let { pane, focused }: { pane: PaneId; focused: boolean } = $props();
@@ -10,26 +10,78 @@
   const ringing = $derived(rings.active[pane] === true);
   const pending = $derived(paneInfo(pane)?.notification != null);
 
+  type DropZone = "left" | "right" | "top" | "bottom";
+  let dropZone = $state<DropZone | null>(null);
+
   const extraActions = [
     { label: "오른쪽으로 분할", run: () => void splitPane(pane, "horizontal") },
     { label: "아래로 분할", run: () => void splitPane(pane, "vertical") },
     { label: "Pane 닫기", run: () => void closePane(pane) },
   ];
+
+  function zoneOf(e: DragEvent, el: HTMLElement): DropZone {
+    const rect = el.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    // Nearest edge wins.
+    const distances: [DropZone, number][] = [
+      ["left", x],
+      ["right", 1 - x],
+      ["top", y],
+      ["bottom", 1 - y],
+    ];
+    distances.sort((a, b) => a[1] - b[1]);
+    return distances[0][0];
+  }
+
+  function onDrop(e: DragEvent) {
+    e.preventDefault();
+    const source = e.dataTransfer?.getData("cmux/pane");
+    const zone = dropZone;
+    dropZone = null;
+    if (!source || source === pane || !zone) return;
+    const axis: SplitAxis = zone === "left" || zone === "right" ? "horizontal" : "vertical";
+    const before = zone === "left" || zone === "top";
+    void movePane(source, pane, axis, before);
+  }
 </script>
 
 <section
   class="pane"
   class:focused
   class:ringing
+  role="group"
   onpointerdowncapture={() => {
     if (!focused) void focusPane(pane);
   }}
+  ondragover={(e) => {
+    if (e.dataTransfer?.types.includes("cmux/pane")) {
+      e.preventDefault();
+      dropZone = zoneOf(e, e.currentTarget as HTMLElement);
+    }
+  }}
+  ondragleave={() => (dropZone = null)}
+  ondrop={onDrop}
 >
   <Terminal {pane} {focused} {extraActions} />
   {#if pending}
     <span class="pending-dot" title="알림 대기 중"></span>
   {/if}
+  {#if dropZone}
+    <div class="drop-overlay {dropZone}"></div>
+  {/if}
   <div class="toolbar">
+    <button
+      class="drag-handle"
+      title="드래그해서 위치 이동"
+      draggable="true"
+      ondragstart={(e) => {
+        e.dataTransfer?.setData("cmux/pane", pane);
+        if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+      }}
+    >
+      ⠿
+    </button>
     <button title="오른쪽으로 분할 (Ctrl+Shift+D)" onclick={() => void splitPane(pane, "horizontal")}>
       ◫
     </button>
@@ -80,6 +132,25 @@
     background: #7dcfff;
     z-index: 10;
   }
+  .drop-overlay {
+    position: absolute;
+    z-index: 15;
+    background: rgba(122, 162, 247, 0.25);
+    border: 2px solid #7aa2f7;
+    pointer-events: none;
+  }
+  .drop-overlay.left {
+    inset: 0 50% 0 0;
+  }
+  .drop-overlay.right {
+    inset: 0 0 0 50%;
+  }
+  .drop-overlay.top {
+    inset: 0 0 50% 0;
+  }
+  .drop-overlay.bottom {
+    inset: 50% 0 0 0;
+  }
   .toolbar {
     position: absolute;
     top: 4px;
@@ -108,6 +179,9 @@
   }
   .toolbar button:hover {
     background: #3b4261;
+  }
+  .toolbar .drag-handle {
+    cursor: grab;
   }
   .toolbar button.close:hover {
     background: #f7768e;

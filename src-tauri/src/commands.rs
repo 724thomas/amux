@@ -93,6 +93,22 @@ pub fn rename_pane(engine: Eng<'_>, pane: PaneId, name: String) -> Result<(), St
 }
 
 #[tauri::command]
+pub fn move_pane(
+    engine: Eng<'_>,
+    pane: PaneId,
+    target: PaneId,
+    axis: SplitAxis,
+    before: bool,
+) -> Result<(), String> {
+    engine.move_pane(pane, target, axis, before).map_err(err)
+}
+
+#[tauri::command]
+pub fn clear_notification_history(engine: Eng<'_>) {
+    engine.clear_notification_history()
+}
+
+#[tauri::command]
 pub fn write_pane(engine: Eng<'_>, pane: PaneId, data: String) -> Result<(), String> {
     engine.write_pane(pane, data.as_bytes()).map_err(err)
 }

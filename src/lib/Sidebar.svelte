@@ -5,6 +5,7 @@
   // open the browser, + creates a workspace.
   import { openUrl } from "@tauri-apps/plugin-opener";
   import {
+    clearNotificationHistory,
     closePane,
     closeWorkspace,
     createWorkspace,
@@ -78,6 +79,26 @@
     menu = null;
     if (target.kind === "workspace") void closeWorkspace(target.id);
     else void closePane(target.id);
+  }
+
+  function fmtTime(atMs: number): string {
+    const d = new Date(atMs);
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  }
+
+  function notifIcon(kind: string): string {
+    switch (kind) {
+      case "attention":
+        return "●";
+      case "done":
+        return "✓";
+      case "bell":
+        return "♪";
+      default:
+        return "·";
+    }
   }
 </script>
 
@@ -181,6 +202,33 @@
     {/each}
   </ul>
   <button class="add" onclick={() => void createWorkspace()}>+ 새 워크스페이스</button>
+
+  <!-- 하단: 알림 히스토리 -->
+  <div class="notif-panel">
+    <div class="notif-head">
+      <span>알림</span>
+      {#if (snapshot?.notifications.length ?? 0) > 0}
+        <button class="notif-clear" onclick={() => void clearNotificationHistory()}>지우기</button>
+      {/if}
+    </div>
+    <ul class="notif-list">
+      {#each snapshot?.notifications ?? [] as n (n.at_ms + n.pane)}
+        <li>
+          <button class="notif-entry" onclick={() => void focusPane(n.pane).catch(() => {})}>
+            <span class="notif-line">
+              <span class="notif-icon {n.kind}">{notifIcon(n.kind)}</span>
+              <span class="notif-pane">{n.pane_name}</span>
+              <span class="notif-time">{fmtTime(n.at_ms)}</span>
+            </span>
+            <span class="notif-msg">{n.body ?? n.title ?? ""}</span>
+          </button>
+        </li>
+      {:else}
+        <li class="notif-empty">알림 없음</li>
+      {/each}
+    </ul>
+  </div>
+
   <div class="font-control" title="글꼴 크기 (Ctrl+= / Ctrl+- / Ctrl+휠)">
     <span class="font-label">Aa</span>
     <button onclick={() => adjustFontSize(-1)}>−</button>
@@ -212,6 +260,85 @@
   }
   .workspaces {
     flex: 1;
+    overflow-y: auto;
+    min-height: 30%;
+  }
+  .notif-panel {
+    display: flex;
+    flex-direction: column;
+    max-height: 40%;
+    border-top: 1px solid #2a2e42;
+  }
+  .notif-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px 4px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: #565f89;
+  }
+  .notif-clear {
+    font-size: 0.7rem;
+    color: #565f89;
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
+  .notif-clear:hover {
+    color: #c0caf5;
+  }
+  .notif-list {
+    overflow-y: auto;
+  }
+  .notif-empty {
+    padding: 4px 10px 8px;
+    font-size: 0.72rem;
+    color: #3b4261;
+  }
+  .notif-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    width: 100%;
+    padding: 4px 10px;
+    text-align: left;
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
+  .notif-entry:hover {
+    background: #1f2335;
+  }
+  .notif-line {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    font-size: 0.72rem;
+  }
+  .notif-icon.attention {
+    color: #f7768e;
+  }
+  .notif-icon.done {
+    color: #9ece6a;
+  }
+  .notif-icon.bell {
+    color: #e0af68;
+  }
+  .notif-pane {
+    color: #a9b1d6;
+    font-weight: 600;
+  }
+  .notif-time {
+    margin-left: auto;
+    color: #3b4261;
+  }
+  .notif-msg {
+    font-size: 0.72rem;
+    color: #7dcfff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .entry {
     display: flex;

@@ -9,12 +9,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::collections::VecDeque;
+
 use cmux_protocol::{
-    LayoutNode, NotifyKind, PaneId, PaneInfo, PaneNotification, Snapshot, SplitAxis,
-    WorkspaceId, WorkspaceInfo,
+    LayoutNode, NotificationEntry, NotifyKind, PaneId, PaneInfo, PaneNotification, Snapshot,
+    SplitAxis, WorkspaceId, WorkspaceInfo,
 };
 use indexmap::IndexMap;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use tokio::sync::broadcast;
 
 use crate::layout;
@@ -55,11 +57,14 @@ struct Workspaces {
     pane_created_count: usize,
 }
 
+const HISTORY_CAP: usize = 200;
+
 pub struct Engine {
     panes: RwLock<HashMap<PaneId, Arc<Pane>>>,
     workspaces: RwLock<Workspaces>,
     events: broadcast::Sender<EngineEvent>,
     window_focused: AtomicBool,
+    history: Mutex<VecDeque<NotificationEntry>>,
 }
 
 impl Engine {
@@ -70,6 +75,7 @@ impl Engine {
             workspaces: RwLock::new(Workspaces::default()),
             events,
             window_focused: AtomicBool::new(true),
+            history: Mutex::new(VecDeque::new()),
         })
     }
 
@@ -288,7 +294,8 @@ impl Engine {
             && ws.map.get(&pane.workspace).is_some_and(|s| s.active_pane == id)
     }
 
-    /// Notification pipeline shared by OSC detection and the socket API.
+    /// Notification pipeline shared by OSC detection, idle detection, and
+    /// the socket API. `Idle` is a quiet kind: sidebar badge only.
     pub fn notify_pane(
         &self,
         id: PaneId,
@@ -307,8 +314,29 @@ impl Engine {
             title: Some(title.clone()),
             body: body.clone(),
         });
-        crate::notify::send_desktop(kind, &title, body.as_deref().unwrap_or(""));
-        let _ = self.events.send(EngineEvent::PaneRing(id));
+        if kind != NotifyKind::Idle {
+            crate::notify::send_desktop(kind, &title, body.as_deref().unwrap_or(""));
+            let _ = self.events.send(EngineEvent::PaneRing(id));
+            let entry = NotificationEntry {
+                pane: id,
+                pane_name: pane.name.lock().clone(),
+                kind,
+                title: Some(title),
+                body,
+                at_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0),
+            };
+            let mut history = self.history.lock();
+            history.push_front(entry);
+            history.truncate(HISTORY_CAP);
+        }
+        self.notify_state_changed();
+    }
+
+    pub fn clear_notification_history(&self) {
+        self.history.lock().clear();
         self.notify_state_changed();
     }
 
@@ -353,6 +381,45 @@ impl Engine {
         drop(ws);
         // Looking at it now — its pending notification is acknowledged.
         *pane.notification.lock() = None;
+        self.notify_state_changed();
+        Ok(())
+    }
+
+    /// Drag-rearrange: detach `pane` from its position and re-insert it as a
+    /// split of `target` (same workspace). `before` puts it left/top.
+    pub fn move_pane(
+        &self,
+        pane_id: PaneId,
+        target: PaneId,
+        axis: SplitAxis,
+        before: bool,
+    ) -> Result<(), EngineError> {
+        if pane_id == target {
+            return Ok(());
+        }
+        let pane = self.pane(pane_id)?;
+        let target_pane = self.pane(target)?;
+        if pane.workspace != target_pane.workspace {
+            return Err(EngineError::Other(anyhow::anyhow!(
+                "panes are in different workspaces"
+            )));
+        }
+        let mut ws = self.workspaces.write();
+        let state = ws
+            .map
+            .get_mut(&pane.workspace)
+            .ok_or(EngineError::WorkspaceNotFound(pane.workspace))?;
+        // Detach (keeps the pane process alive), then re-insert next to target.
+        let Some(without) = layout::remove(state.layout.clone(), pane_id) else {
+            return Ok(()); // it's the only pane — nothing to rearrange
+        };
+        let mut layout = without;
+        if !layout::split_insert(&mut layout, target, axis, pane_id, before) {
+            return Err(EngineError::PaneNotFound(target));
+        }
+        state.layout = layout;
+        state.active_pane = pane_id;
+        drop(ws);
         self.notify_state_changed();
         Ok(())
     }
@@ -427,6 +494,7 @@ impl Engine {
                 })
                 .collect(),
             active_workspace: ws.active,
+            notifications: self.history.lock().iter().cloned().collect(),
         }
     }
 
@@ -449,12 +517,54 @@ impl Engine {
                         *slot = fresh;
                         changed = true;
                     }
+                    drop(slot);
+                    changed |= engine.sweep_idle(&pane);
                 }
                 if changed {
                     engine.notify_state_changed();
                 }
             })
             .expect("spawn meta sweeper");
+    }
+
+    /// Idle detection: an app (not the bare shell) that produced a ≥2s burst
+    /// of output and then went silent for 10s is probably waiting for input.
+    /// Quiet signal — sidebar badge only. Returns true if state changed.
+    fn sweep_idle(&self, pane: &Arc<Pane>) -> bool {
+        const SILENCE: Duration = Duration::from_secs(10);
+        const MIN_BURST: Duration = Duration::from_secs(2);
+
+        let activity = *pane.activity.lock();
+        let silent_for = activity.last_output.elapsed();
+        let burst_len = activity
+            .last_output
+            .duration_since(activity.burst_start);
+        let app_running = {
+            let fg = pane.shell_pid();
+            fg.is_some() && fg != pane.child_pid()
+        };
+
+        let mut notification = pane.notification.lock();
+        match &*notification {
+            // Output resumed → the idle badge is stale.
+            Some(n) if n.kind == NotifyKind::Idle && silent_for < SILENCE => {
+                *notification = None;
+                true
+            }
+            None if app_running
+                && silent_for >= SILENCE
+                && burst_len >= MIN_BURST
+                && !self.pane_visible_and_focused(pane.id) =>
+            {
+                *notification = Some(PaneNotification {
+                    kind: NotifyKind::Idle,
+                    title: Some(crate::notify::default_title(NotifyKind::Idle).into()),
+                    body: None,
+                });
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Kill every pane (app shutdown).

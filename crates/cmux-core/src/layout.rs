@@ -27,19 +27,34 @@ fn collect(node: &LayoutNode, out: &mut Vec<PaneId>) {
 /// Replace the leaf holding `target` with a split of `target` + `new_pane`.
 /// Returns false if `target` is not in the tree.
 pub fn split(node: &mut LayoutNode, target: PaneId, axis: SplitAxis, new_pane: PaneId) -> bool {
+    split_insert(node, target, axis, new_pane, false)
+}
+
+/// Like `split`, but `before` controls which side the inserted pane lands on
+/// (true → first/left/top, false → second/right/bottom). Used by both pane
+/// splitting and drag-rearrange.
+pub fn split_insert(
+    node: &mut LayoutNode,
+    target: PaneId,
+    axis: SplitAxis,
+    new_pane: PaneId,
+    before: bool,
+) -> bool {
     match node {
         LayoutNode::Leaf { pane } if *pane == target => {
+            let (first, second) = if before { (new_pane, target) } else { (target, new_pane) };
             *node = LayoutNode::Split {
                 axis,
                 ratio: 0.5,
-                first: Box::new(LayoutNode::Leaf { pane: target }),
-                second: Box::new(LayoutNode::Leaf { pane: new_pane }),
+                first: Box::new(LayoutNode::Leaf { pane: first }),
+                second: Box::new(LayoutNode::Leaf { pane: second }),
             };
             true
         }
         LayoutNode::Leaf { .. } => false,
         LayoutNode::Split { first, second, .. } => {
-            split(first, target, axis, new_pane) || split(second, target, axis, new_pane)
+            split_insert(first, target, axis, new_pane, before)
+                || split_insert(second, target, axis, new_pane, before)
         }
     }
 }

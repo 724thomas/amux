@@ -116,11 +116,25 @@ pub struct WorkspaceInfo {
     pub active_pane: Option<PaneId>,
 }
 
+/// One entry in the notification history (sidebar bottom panel).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationEntry {
+    pub pane: PaneId,
+    pub pane_name: String,
+    pub kind: NotifyKind,
+    pub title: Option<String>,
+    pub body: Option<String>,
+    /// Unix epoch milliseconds.
+    pub at_ms: u64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Snapshot {
     pub workspaces: Vec<WorkspaceInfo>,
     pub panes: Vec<PaneInfo>,
     pub active_workspace: Option<WorkspaceId>,
+    /// Most recent first, bounded.
+    pub notifications: Vec<NotificationEntry>,
 }
 
 // ---------------------------------------------------------------------------

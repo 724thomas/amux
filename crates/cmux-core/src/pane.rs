@@ -39,6 +39,22 @@ pub struct Pane {
     child_pid: Option<u32>,
     pub meta: Mutex<PaneMeta>,
     pub notification: Mutex<Option<PaneNotification>>,
+    /// Output activity for idle detection (read by the sweeper).
+    pub activity: Mutex<Activity>,
+}
+
+#[derive(Clone, Copy)]
+pub struct Activity {
+    pub last_output: std::time::Instant,
+    /// Start of the current output burst (gaps > 2s start a new burst).
+    pub burst_start: std::time::Instant,
+}
+
+impl Default for Activity {
+    fn default() -> Self {
+        let now = std::time::Instant::now();
+        Self { last_output: now, burst_start: now }
+    }
 }
 
 impl Pane {
@@ -97,6 +113,7 @@ impl Pane {
             child_pid,
             meta: Mutex::new(PaneMeta::default()),
             notification: Mutex::new(None),
+            activity: Mutex::new(Activity::default()),
         });
 
         // Reader thread: PTY → term state → tail buffer → sink.
@@ -112,6 +129,16 @@ impl Pane {
                             Ok(0) | Err(_) => break,
                             Ok(n) => {
                                 let chunk = &buf[..n];
+                                {
+                                    let mut activity = pane.activity.lock();
+                                    let now = std::time::Instant::now();
+                                    if now.duration_since(activity.last_output)
+                                        > std::time::Duration::from_secs(2)
+                                    {
+                                        activity.burst_start = now;
+                                    }
+                                    activity.last_output = now;
+                                }
                                 // Terminal replies (kitty keyboard mode reports)
                                 // go straight back to the application.
                                 for reply in pane.term.advance(chunk) {
