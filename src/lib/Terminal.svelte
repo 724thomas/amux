@@ -137,6 +137,12 @@
           void copySelection().then(() => term.clearSelection());
           return false;
         }
+        // Ctrl+X "cut": 터미널 출력은 삭제할 수 없으므로 복사+선택 해제.
+        // 선택이 없으면 nano/emacs 등이 쓰는 원래 Ctrl+X로 동작.
+        if (e.code === "KeyX" && term.hasSelection()) {
+          void copySelection().then(() => term.clearSelection());
+          return false;
+        }
         // Ctrl+V always pastes (readline's literal-next is Ctrl+Shift+V
         // territory for the rare user who needs it... which we also use
         // for paste, so literal-next is effectively retired here).
