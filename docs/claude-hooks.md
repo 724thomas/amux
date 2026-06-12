@@ -15,6 +15,10 @@ python3 scripts/install-claude-hooks.py
 ```json
 {
   "hooks": {
+    "SessionStart": [
+      { "matcher": "", "hooks": [
+        { "type": "command", "command": "cmux notify --kind idle 2>/dev/null || true" } ] }
+    ],
     "UserPromptSubmit": [
       { "matcher": "", "hooks": [
         { "type": "command", "command": "cmux notify --kind progress 2>/dev/null || true" } ] }
@@ -43,13 +47,17 @@ Claude Code 같은 TUI는 대기 중에도 화면을 계속 다시 그리므로 
 
 | hook | cmux 상태 | 색 |
 |---|---|---|
+| SessionStart (claude 시작) | idle | 파랑 |
 | UserPromptSubmit / PostToolUse | processing… | 빨강 |
 | Stop | processed → (열람 후) idle | 초록 → 파랑 |
 | Notification (권한/질문 대기) | waiting | 노랑 |
 
 - **Notification hook**: `--from-claude-hook`이 hook의 JSON 페이로드(stdin)
   에서 메시지를 직접 추출하므로 `jq`가 필요 없습니다.
-- hook이 없는 pane은 출력 휴리스틱(2초+ 출력 후 10초 침묵)으로 동작합니다.
+- hook이 없는 pane은 출력 휴리스틱으로 동작합니다: 입력 직후 1.5초 내의
+  출력(에코·프롬프트 다시 그리기)은 무시하고, 실제 작업 출력이 4초 멎거나
+  포그라운드 프로세스가 끝나면 완료로 판정합니다. 상태는 항상
+  processing / processed / idle / waiting 4가지 중 하나입니다.
 
 ## 동작
 

@@ -23,6 +23,10 @@ pub type OutputSink = Box<dyn Fn(&[u8]) + Send + Sync>;
 const READ_BUF: usize = 64 * 1024;
 /// Cap for the raw replay buffer; old bytes are dropped from the front.
 const TAIL_CAP: usize = 512 * 1024;
+/// Output this soon after user input is echo / prompt repaint, not work —
+/// it must not flip the pane to `processing` (e.g. typing into Claude's
+/// input box redraws the whole prompt on every keystroke).
+const ECHO_WINDOW: std::time::Duration = std::time::Duration::from_millis(1500);
 
 pub struct Pane {
     pub id: PaneId,
@@ -39,8 +43,12 @@ pub struct Pane {
     child_pid: Option<u32>,
     pub meta: Mutex<PaneMeta>,
     pub notification: Mutex<Option<PaneNotification>>,
-    /// Output activity for status detection (read by the sweeper).
+    /// Work-output activity for status detection (read by the sweeper).
+    /// Output arriving right after user input is echo/repaint, not work,
+    /// and is not recorded here (see `ECHO_WINDOW`).
     pub activity: Mutex<Activity>,
+    /// When the user last typed/pasted into this pane.
+    pub last_input: Mutex<std::time::Instant>,
     /// Work status state machine (driven by the sweeper + focus events).
     pub status: Mutex<PaneStatus>,
     /// Set when a waiting-for-input signal (hook/bell) arrives; cleared by
@@ -123,7 +131,8 @@ impl Pane {
             meta: Mutex::new(PaneMeta::default()),
             notification: Mutex::new(None),
             activity: Mutex::new(Activity::default()),
-            status: Mutex::new(PaneStatus::None),
+            last_input: Mutex::new(std::time::Instant::now()),
+            status: Mutex::new(PaneStatus::default()),
             waiting_since: Mutex::new(None),
             hook_managed: std::sync::atomic::AtomicBool::new(false),
         });
@@ -142,14 +151,18 @@ impl Pane {
                             Ok(n) => {
                                 let chunk = &buf[..n];
                                 {
-                                    let mut activity = pane.activity.lock();
                                     let now = std::time::Instant::now();
-                                    if now.duration_since(activity.last_output)
-                                        > std::time::Duration::from_secs(2)
-                                    {
-                                        activity.burst_start = now;
+                                    let echo =
+                                        now.duration_since(*pane.last_input.lock()) < ECHO_WINDOW;
+                                    if !echo {
+                                        let mut activity = pane.activity.lock();
+                                        if now.duration_since(activity.last_output)
+                                            > std::time::Duration::from_secs(2)
+                                        {
+                                            activity.burst_start = now;
+                                        }
+                                        activity.last_output = now;
                                     }
-                                    activity.last_output = now;
                                 }
                                 // Terminal replies (kitty keyboard mode reports)
                                 // go straight back to the application.
@@ -195,11 +208,20 @@ impl Pane {
         Ok(pane)
     }
 
+    /// Raw write (terminal protocol replies). User input goes through
+    /// `write_input` so the echo window can tell typing apart from work.
     pub fn write(&self, data: &[u8]) -> anyhow::Result<()> {
         let mut writer = self.writer.lock();
         writer.write_all(data)?;
         writer.flush()?;
         Ok(())
+    }
+
+    /// User/CLI input: stamps `last_input` so the output that immediately
+    /// follows (echo, prompt repaint) is not mistaken for work output.
+    pub fn write_input(&self, data: &[u8]) -> anyhow::Result<()> {
+        *self.last_input.lock() = std::time::Instant::now();
+        self.write(data)
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> anyhow::Result<()> {

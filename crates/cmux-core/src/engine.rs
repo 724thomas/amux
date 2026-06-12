@@ -333,7 +333,15 @@ impl Engine {
                 *pane.status.lock() =
                     if visible { PaneStatus::Idle } else { PaneStatus::Processed };
             }
-            NotifyKind::Idle => {}
+            NotifyKind::Idle => {
+                // SessionStart hook: the app declares itself idle and
+                // hook-managed — no work in flight, heuristic stands down.
+                pane.hook_managed.store(true, Ordering::SeqCst);
+                *pane.waiting_since.lock() = None;
+                *pane.status.lock() = PaneStatus::Idle;
+                self.notify_state_changed();
+                return; // quiet: a fresh session is not an announcement
+            }
         }
 
         // The user is already looking at this pane — announce nothing.
@@ -348,24 +356,23 @@ impl Engine {
             title: Some(title.clone()),
             body: body.clone(),
         });
-        if kind != NotifyKind::Idle {
-            crate::notify::send_desktop(kind, &title, body.as_deref().unwrap_or(""));
-            let _ = self.events.send(EngineEvent::PaneRing(id));
-            let entry = NotificationEntry {
-                pane: id,
-                pane_name: pane.name.lock().clone(),
-                kind,
-                title: Some(title),
-                body,
-                at_ms: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0),
-            };
-            let mut history = self.history.lock();
-            history.push_front(entry);
-            history.truncate(HISTORY_CAP);
-        }
+        crate::notify::send_desktop(kind, &title, body.as_deref().unwrap_or(""));
+        let _ = self.events.send(EngineEvent::PaneRing(id));
+        let entry = NotificationEntry {
+            pane: id,
+            pane_name: pane.name.lock().clone(),
+            kind,
+            title: Some(title),
+            body,
+            at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+        };
+        let mut history = self.history.lock();
+        history.push_front(entry);
+        history.truncate(HISTORY_CAP);
+        drop(history);
         self.notify_state_changed();
     }
 
@@ -487,7 +494,7 @@ impl Engine {
     }
 
     pub fn write_pane(&self, id: PaneId, data: &[u8]) -> Result<(), EngineError> {
-        self.pane(id)?.write(data).map_err(EngineError::Other)
+        self.pane(id)?.write_input(data).map_err(EngineError::Other)
     }
 
     pub fn resize_pane(&self, id: PaneId, cols: u16, rows: u16) -> Result<(), EngineError> {
@@ -544,7 +551,7 @@ impl Engine {
         std::thread::Builder::new()
             .name("meta-sweeper".into())
             .spawn(move || loop {
-                std::thread::sleep(Duration::from_secs(2));
+                std::thread::sleep(Duration::from_secs(1));
                 let Some(engine) = engine.upgrade() else { break };
                 let panes: Vec<Arc<Pane>> = engine.panes.read().values().cloned().collect();
                 let mut changed = false;
@@ -565,14 +572,17 @@ impl Engine {
             .expect("spawn meta sweeper");
     }
 
-    /// Work-status state machine, driven every sweep tick:
-    /// - processing (red): app running, output within the last 10s
-    /// - processed (green): work burst (≥2s) finished, user hasn't looked yet
-    /// - idle (blue): finished and the user has seen the pane
-    /// - waiting (yellow): waiting-for-input signal (hook/bell), clears when
-    ///   output resumes (i.e. the user answered)
+    /// Work-status state machine, driven every sweep tick. A pane is always
+    /// in exactly one of four states:
+    /// - processing (red): work in progress (work output within the last 4s)
+    /// - processed (green): work finished, user hasn't looked yet
+    /// - idle (blue): nothing in flight, latest result already seen
+    /// - waiting (yellow): waiting-for-input signal (hook/bell)
+    ///
+    /// "Work output" excludes echo: bytes arriving right after user input
+    /// (typing, prompt repaint) never count — see `Pane::write_input`.
     fn sweep_status(&self, pane: &Arc<Pane>) -> bool {
-        const SILENCE: Duration = Duration::from_secs(10);
+        const SILENCE: Duration = Duration::from_secs(4);
         const MIN_BURST: Duration = Duration::from_secs(2);
 
         let activity = *pane.activity.lock();
@@ -587,24 +597,38 @@ impl Engine {
         let mut status = pane.status.lock();
         let old = *status;
 
+        // In-flight work resolves to processed (or straight to idle when the
+        // user is already looking); settled states stay as they are.
+        let finished = |old: PaneStatus| match old {
+            PaneStatus::Processing | PaneStatus::Waiting => {
+                if self.pane_visible_and_focused(pane.id) {
+                    PaneStatus::Idle
+                } else {
+                    PaneStatus::Processed
+                }
+            }
+            settled => settled,
+        };
+
         // Lifecycle hooks own the status while the app runs: TUIs like
-        // Claude Code repaint constantly, so the silence heuristic below
-        // would pin them at `processing` forever. Waiting resolves via the
-        // next progress/done hook, not via output.
+        // Claude Code repaint constantly, so the heuristic below would
+        // misread them. Once the app exits, resolve whatever was in flight
+        // and hand control back to the heuristic.
         if hook_managed {
-            let new = if !app_running {
+            let new = if app_running {
+                old
+            } else {
                 pane.hook_managed.store(false, Ordering::SeqCst);
                 *pane.waiting_since.lock() = None;
-                PaneStatus::None
-            } else {
-                old
+                finished(old)
             };
             *status = new;
             return old != new;
         }
 
-        // Heuristic path: a waiting signal is consumed once output resumed
-        // (2s grace — TUIs repaint while *showing* the prompt too).
+        // Heuristic path: a waiting signal is consumed once work output
+        // resumed after it (2s grace — the app repaints while *showing*
+        // the prompt too).
         {
             let mut waiting = pane.waiting_since.lock();
             if let Some(since) = *waiting {
@@ -616,26 +640,25 @@ impl Engine {
         let waiting = pane.waiting_since.lock().is_some();
 
         let new = if !app_running {
-            PaneStatus::None
+            // Foreground is the shell again — the command (if any) is done.
+            *pane.waiting_since.lock() = None;
+            finished(old)
         } else if waiting {
             PaneStatus::Waiting
         } else if silent_for < SILENCE {
             PaneStatus::Processing
         } else {
+            // App still running but quiet: a real burst (≥2s) just wrapped
+            // up; short blips weren't work in the first place.
             match old {
-                // Work just wrapped up. Short blips (< 2s burst) aren't work.
                 PaneStatus::Processing | PaneStatus::Waiting => {
                     if burst_len >= MIN_BURST {
-                        if self.pane_visible_and_focused(pane.id) {
-                            PaneStatus::Idle
-                        } else {
-                            PaneStatus::Processed
-                        }
+                        finished(old)
                     } else {
-                        PaneStatus::None
+                        PaneStatus::Idle
                     }
                 }
-                other => other,
+                settled => settled,
             }
         };
         *status = new;

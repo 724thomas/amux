@@ -47,7 +47,12 @@
          buffers; only the active one is displayed. -->
     {#each snapshot?.workspaces ?? [] as ws (ws.id)}
       <div class="workspace" class:hidden={ws.id !== snapshot?.active_workspace}>
-        <SplitNode node={ws.layout} workspace={ws.id} activePane={ws.active_pane} />
+        <SplitNode
+          node={ws.layout}
+          workspace={ws.id}
+          activePane={ws.active_pane}
+          visible={ws.id === snapshot?.active_workspace}
+        />
       </div>
     {/each}
   </main>

@@ -181,7 +181,7 @@
                 {:else}
                   <span class="pane-name">
                     {pane?.name ?? "터미널"}
-                    {#if pane?.status && pane.status !== "none"}
+                    {#if pane}
                       <span class="status {pane.status}">
                         {pane.status === "processing" ? "processing…" : pane.status}
                       </span>

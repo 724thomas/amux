@@ -9,11 +9,16 @@
     node,
     workspace,
     activePane,
+    visible = true,
     path = [],
   }: {
     node: LayoutNode;
     workspace: WorkspaceId;
     activePane: PaneId | null;
+    /// Whether this workspace is the one on screen. Hidden workspaces must
+    /// not mark their active pane as focused — switching back would then
+    /// never re-trigger keyboard focus (the prop never changes).
+    visible?: boolean;
     path?: boolean[];
   } = $props();
 
@@ -66,11 +71,11 @@
 </script>
 
 {#if node.type === "leaf"}
-  <PaneView pane={node.pane} focused={node.pane === activePane} />
+  <PaneView pane={node.pane} focused={visible && node.pane === activePane} />
 {:else}
   <div class="split {node.axis}" bind:this={container}>
     <div class="cell" style="flex-grow: {ratio}">
-      <SplitNode node={node.first} {workspace} {activePane} path={[...path, false]} />
+      <SplitNode node={node.first} {workspace} {activePane} {visible} path={[...path, false]} />
     </div>
     <div
       class="divider {node.axis}"
@@ -83,7 +88,7 @@
       ondblclick={() => void setRatio(workspace, path, 0.5)}
     ></div>
     <div class="cell" style="flex-grow: {1 - ratio}">
-      <SplitNode node={node.second} {workspace} {activePane} path={[...path, true]} />
+      <SplitNode node={node.second} {workspace} {activePane} {visible} path={[...path, true]} />
     </div>
   </div>
 {/if}

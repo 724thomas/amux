@@ -19,7 +19,7 @@ export interface PaneNotification {
   body: string | null;
 }
 
-export type PaneStatus = "none" | "processing" | "processed" | "idle" | "waiting";
+export type PaneStatus = "processing" | "processed" | "idle" | "waiting";
 
 export interface PaneInfo {
   id: PaneId;

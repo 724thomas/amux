@@ -23,6 +23,7 @@ def main():
     shutil.copy(SETTINGS, BACKUP)
 
     hooks = settings.setdefault("hooks", {})
+    hooks["SessionStart"] = hook("cmux notify --kind idle 2>/dev/null || true")
     hooks["UserPromptSubmit"] = hook("cmux notify --kind progress 2>/dev/null || true")
     hooks["PostToolUse"] = hook("cmux notify --kind progress 2>/dev/null || true")
     hooks["Notification"] = hook(
