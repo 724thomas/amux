@@ -87,6 +87,23 @@ pub struct PaneNotification {
     pub body: Option<String>,
 }
 
+/// Pane work status, shown as a colored chip in the sidebar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneStatus {
+    /// Bare shell / nothing noteworthy.
+    #[default]
+    None,
+    /// An app is producing output right now (red).
+    Processing,
+    /// Work finished and the user has not looked yet (green).
+    Processed,
+    /// Work finished and the user has seen it (blue).
+    Idle,
+    /// The app is waiting for user input — hook/bell signal (yellow).
+    Waiting,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PaneMeta {
     pub cwd: Option<String>,
@@ -105,6 +122,7 @@ pub struct PaneInfo {
     pub name: String,
     pub meta: PaneMeta,
     pub notification: Option<PaneNotification>,
+    pub status: PaneStatus,
     pub exited: bool,
 }
 

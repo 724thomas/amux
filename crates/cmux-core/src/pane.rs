@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use cmux_protocol::{env_keys, PaneId, PaneMeta, PaneNotification, WorkspaceId};
+use cmux_protocol::{env_keys, PaneId, PaneMeta, PaneNotification, PaneStatus, WorkspaceId};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
@@ -39,8 +39,13 @@ pub struct Pane {
     child_pid: Option<u32>,
     pub meta: Mutex<PaneMeta>,
     pub notification: Mutex<Option<PaneNotification>>,
-    /// Output activity for idle detection (read by the sweeper).
+    /// Output activity for status detection (read by the sweeper).
     pub activity: Mutex<Activity>,
+    /// Work status state machine (driven by the sweeper + focus events).
+    pub status: Mutex<PaneStatus>,
+    /// Set when a waiting-for-input signal (hook/bell) arrives; cleared by
+    /// the sweeper once output resumes after that instant.
+    pub waiting_since: Mutex<Option<std::time::Instant>>,
 }
 
 #[derive(Clone, Copy)]
@@ -114,6 +119,8 @@ impl Pane {
             meta: Mutex::new(PaneMeta::default()),
             notification: Mutex::new(None),
             activity: Mutex::new(Activity::default()),
+            status: Mutex::new(PaneStatus::None),
+            waiting_since: Mutex::new(None),
         });
 
         // Reader thread: PTY → term state → tail buffer → sink.

@@ -19,12 +19,15 @@ export interface PaneNotification {
   body: string | null;
 }
 
+export type PaneStatus = "none" | "processing" | "processed" | "idle" | "waiting";
+
 export interface PaneInfo {
   id: PaneId;
   workspace: WorkspaceId;
   name: string;
   meta: PaneMeta;
   notification: PaneNotification | null;
+  status: PaneStatus;
   exited: boolean;
 }
 

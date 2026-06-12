@@ -181,6 +181,11 @@
                 {:else}
                   <span class="pane-name">
                     {pane?.name ?? "터미널"}
+                    {#if pane?.status && pane.status !== "none"}
+                      <span class="status {pane.status}">
+                        {pane.status === "processing" ? "processing…" : pane.status}
+                      </span>
+                    {/if}
                     {#if pane?.notification}<span class="badge"></span>{/if}
                   </span>
                   <span class="pane-detail">
@@ -410,6 +415,29 @@
     border-radius: 50%;
     background: #7dcfff;
     flex-shrink: 0;
+  }
+  .status {
+    font-size: 0.65rem;
+    padding: 0 6px;
+    border-radius: 8px;
+    flex-shrink: 0;
+    font-weight: 600;
+  }
+  .status.processing {
+    color: #f7768e;
+    background: rgba(247, 118, 142, 0.15);
+  }
+  .status.processed {
+    color: #9ece6a;
+    background: rgba(158, 206, 106, 0.15);
+  }
+  .status.idle {
+    color: #7aa2f7;
+    background: rgba(122, 162, 247, 0.15);
+  }
+  .status.waiting {
+    color: #e0af68;
+    background: rgba(224, 175, 104, 0.15);
   }
   .notif-text {
     font-size: 0.7rem;

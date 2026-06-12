@@ -12,8 +12,8 @@ use std::time::Duration;
 use std::collections::VecDeque;
 
 use cmux_protocol::{
-    LayoutNode, NotificationEntry, NotifyKind, PaneId, PaneInfo, PaneNotification, Snapshot,
-    SplitAxis, WorkspaceId, WorkspaceInfo,
+    LayoutNode, NotificationEntry, NotifyKind, PaneId, PaneInfo, PaneNotification, PaneStatus,
+    Snapshot, SplitAxis, WorkspaceId, WorkspaceInfo,
 };
 use indexmap::IndexMap;
 use parking_lot::{Mutex, RwLock};
@@ -190,6 +190,7 @@ impl Engine {
             if let Ok(pane) = self.pane(pane) {
                 *pane.notification.lock() = None;
             }
+            self.mark_pane_seen(pane);
         }
         self.notify_state_changed();
         Ok(())
@@ -314,6 +315,11 @@ impl Engine {
             title: Some(title.clone()),
             body: body.clone(),
         });
+        // Attention/bell signals mean "the app is waiting for the user".
+        if matches!(kind, NotifyKind::Attention | NotifyKind::Bell) {
+            *pane.waiting_since.lock() = Some(std::time::Instant::now());
+            *pane.status.lock() = PaneStatus::Waiting;
+        }
         if kind != NotifyKind::Idle {
             crate::notify::send_desktop(kind, &title, body.as_deref().unwrap_or(""));
             let _ = self.events.send(EngineEvent::PaneRing(id));
@@ -359,6 +365,8 @@ impl Engine {
             };
             if let Some(pane) = visible {
                 self.clear_notification(pane);
+                self.mark_pane_seen(pane);
+                self.notify_state_changed();
             }
         }
     }
@@ -381,6 +389,7 @@ impl Engine {
         drop(ws);
         // Looking at it now — its pending notification is acknowledged.
         *pane.notification.lock() = None;
+        self.mark_pane_seen(id);
         self.notify_state_changed();
         Ok(())
     }
@@ -490,6 +499,7 @@ impl Engine {
                     name: p.name.lock().clone(),
                     meta: p.meta.lock().clone(),
                     notification: p.notification.lock().clone(),
+                    status: *p.status.lock(),
                     exited: p.has_exited(),
                 })
                 .collect(),
@@ -518,7 +528,7 @@ impl Engine {
                         changed = true;
                     }
                     drop(slot);
-                    changed |= engine.sweep_idle(&pane);
+                    changed |= engine.sweep_status(&pane);
                 }
                 if changed {
                     engine.notify_state_changed();
@@ -527,43 +537,71 @@ impl Engine {
             .expect("spawn meta sweeper");
     }
 
-    /// Idle detection: an app (not the bare shell) that produced a ≥2s burst
-    /// of output and then went silent for 10s is probably waiting for input.
-    /// Quiet signal — sidebar badge only. Returns true if state changed.
-    fn sweep_idle(&self, pane: &Arc<Pane>) -> bool {
+    /// Work-status state machine, driven every sweep tick:
+    /// - processing (red): app running, output within the last 10s
+    /// - processed (green): work burst (≥2s) finished, user hasn't looked yet
+    /// - idle (blue): finished and the user has seen the pane
+    /// - waiting (yellow): waiting-for-input signal (hook/bell), clears when
+    ///   output resumes (i.e. the user answered)
+    fn sweep_status(&self, pane: &Arc<Pane>) -> bool {
         const SILENCE: Duration = Duration::from_secs(10);
         const MIN_BURST: Duration = Duration::from_secs(2);
 
         let activity = *pane.activity.lock();
         let silent_for = activity.last_output.elapsed();
-        let burst_len = activity
-            .last_output
-            .duration_since(activity.burst_start);
+        let burst_len = activity.last_output.duration_since(activity.burst_start);
         let app_running = {
             let fg = pane.shell_pid();
             fg.is_some() && fg != pane.child_pid()
         };
 
-        let mut notification = pane.notification.lock();
-        match &*notification {
-            // Output resumed → the idle badge is stale.
-            Some(n) if n.kind == NotifyKind::Idle && silent_for < SILENCE => {
-                *notification = None;
-                true
+        // A waiting signal is consumed once output resumed after it.
+        {
+            let mut waiting = pane.waiting_since.lock();
+            if let Some(since) = *waiting {
+                if activity.last_output > since {
+                    *waiting = None;
+                }
             }
-            None if app_running
-                && silent_for >= SILENCE
-                && burst_len >= MIN_BURST
-                && !self.pane_visible_and_focused(pane.id) =>
-            {
-                *notification = Some(PaneNotification {
-                    kind: NotifyKind::Idle,
-                    title: Some(crate::notify::default_title(NotifyKind::Idle).into()),
-                    body: None,
-                });
-                true
+        }
+        let waiting = pane.waiting_since.lock().is_some();
+
+        let mut status = pane.status.lock();
+        let old = *status;
+        let new = if !app_running {
+            PaneStatus::None
+        } else if waiting {
+            PaneStatus::Waiting
+        } else if silent_for < SILENCE {
+            PaneStatus::Processing
+        } else {
+            match old {
+                // Work just wrapped up. Short blips (< 2s burst) aren't work.
+                PaneStatus::Processing | PaneStatus::Waiting => {
+                    if burst_len >= MIN_BURST {
+                        if self.pane_visible_and_focused(pane.id) {
+                            PaneStatus::Idle
+                        } else {
+                            PaneStatus::Processed
+                        }
+                    } else {
+                        PaneStatus::None
+                    }
+                }
+                other => other,
             }
-            _ => false,
+        };
+        *status = new;
+        old != new
+    }
+
+    /// The user is looking at this pane now — processed turns idle.
+    fn mark_pane_seen(&self, id: PaneId) {
+        if let Ok(pane) = self.pane(id) {
+            let mut status = pane.status.lock();
+            if *status == PaneStatus::Processed {
+                *status = PaneStatus::Idle;
+            }
         }
     }
 
