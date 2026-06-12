@@ -61,15 +61,22 @@ pub fn run() {
                         EngineEvent::StateChanged => {
                             let _ = handle.emit("state:snapshot", engine.snapshot());
                         }
+                        EngineEvent::PaneRing(pane) => {
+                            let _ = handle.emit("notify:ring", pane);
+                        }
                     }
                 }
             });
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::Destroyed = event {
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Destroyed => {
                 window.state::<Arc<Engine>>().shutdown();
             }
+            tauri::WindowEvent::Focused(focused) => {
+                window.state::<Arc<Engine>>().set_window_focused(*focused);
+            }
+            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

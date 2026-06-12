@@ -216,6 +216,23 @@ fn dispatch(
             Ok(serde_json::to_value(ReadScreenResult { text }).unwrap())
         }
 
+        "notify.set" => {
+            let p: NotifySetParams = parse(params)?;
+            // Default to the calling pane; fall back to the visible pane.
+            let pane = match &p.pane {
+                Some(reference) => resolve_pane(engine, reference)?,
+                None => engine
+                    .snapshot()
+                    .workspaces
+                    .iter()
+                    .find(|w| Some(w.id) == engine.snapshot().active_workspace)
+                    .and_then(|w| w.active_pane)
+                    .ok_or_else(|| RpcDispatchError::Other("no active pane".into()))?,
+            };
+            engine.notify_pane(pane, p.kind, p.title, p.body);
+            Ok(Value::Null)
+        }
+
         other => Err(RpcDispatchError::MethodNotFound(other.into())),
     }
 }

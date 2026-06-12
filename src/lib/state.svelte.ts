@@ -11,6 +11,10 @@ import {
 
 export const app = $state<{ snapshot: Snapshot | null }>({ snapshot: null });
 
+/** Panes currently flashing their attention ring (pane id → timeout id). */
+export const rings = $state<{ active: Record<PaneId, boolean> }>({ active: {} });
+const ringTimers = new Map<PaneId, ReturnType<typeof setTimeout>>();
+
 let initialized = false;
 
 export async function initState() {
@@ -18,6 +22,17 @@ export async function initState() {
   initialized = true;
   await listen<Snapshot>("state:snapshot", (event) => {
     app.snapshot = event.payload;
+  });
+  await listen<PaneId>("notify:ring", (event) => {
+    const pane = event.payload;
+    rings.active[pane] = true;
+    clearTimeout(ringTimers.get(pane));
+    ringTimers.set(
+      pane,
+      setTimeout(() => {
+        delete rings.active[pane];
+      }, 3000),
+    );
   });
   // The engine creates the initial workspace (avoids double-create when the
   // dev server forces a page reload mid-bootstrap).

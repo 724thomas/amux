@@ -10,10 +10,11 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use cmux_protocol::{env_keys, PaneId, PaneMeta, WorkspaceId};
+use cmux_protocol::{env_keys, PaneId, PaneMeta, PaneNotification, WorkspaceId};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
+use crate::osc::{OscDetector, OscEvent};
 use crate::term_state::TermState;
 
 /// Receives raw output bytes; registered by the UI layer per pane.
@@ -37,6 +38,7 @@ pub struct Pane {
     /// Root PID of the spawned shell (for the metadata sweeper's process walk).
     child_pid: Option<u32>,
     pub meta: Mutex<PaneMeta>,
+    pub notification: Mutex<Option<PaneNotification>>,
 }
 
 impl Pane {
@@ -48,6 +50,7 @@ impl Pane {
         rows: u16,
         cwd: Option<std::path::PathBuf>,
         on_exit: impl FnOnce() + Send + 'static,
+        on_osc: impl Fn(OscEvent) + Send + 'static,
     ) -> anyhow::Result<Arc<Self>> {
         let pty = native_pty_system().openpty(PtySize {
             rows: rows.max(2),
@@ -93,6 +96,7 @@ impl Pane {
             exited: Arc::new(AtomicBool::new(false)),
             child_pid,
             meta: Mutex::new(PaneMeta::default()),
+            notification: Mutex::new(None),
         });
 
         // Reader thread: PTY → term state → tail buffer → sink.
@@ -102,12 +106,16 @@ impl Pane {
                 .name(format!("pty-read-{}", id.short()))
                 .spawn(move || {
                     let mut buf = vec![0u8; READ_BUF];
+                    let mut osc = OscDetector::default();
                     loop {
                         match reader.read(&mut buf) {
                             Ok(0) | Err(_) => break,
                             Ok(n) => {
                                 let chunk = &buf[..n];
                                 pane.term.advance(chunk);
+                                for event in osc.advance(chunk) {
+                                    on_osc(event);
+                                }
                                 // Lock order sink → tail (same as set_sink) so a
                                 // concurrent subscribe can't replay a chunk that
                                 // is also about to be sent live.
@@ -211,6 +219,7 @@ mod tests {
             24,
             None,
             || {},
+            |_| {},
         )
         .expect("spawn pane");
 
@@ -232,8 +241,17 @@ mod tests {
     /// Sinks receive live output, and late subscribers get the tail replay.
     #[test]
     fn sink_receives_output_with_replay() {
-        let pane = Pane::spawn(PaneId::new(), WorkspaceId::new(), "test".into(), 80, 24, None, || {})
-            .expect("spawn pane");
+        let pane = Pane::spawn(
+            PaneId::new(),
+            WorkspaceId::new(),
+            "test".into(),
+            80,
+            24,
+            None,
+            || {},
+            |_| {},
+        )
+        .expect("spawn pane");
         pane.write(b"echo replay-me\n").expect("write");
         std::thread::sleep(Duration::from_millis(1500));
 

@@ -18,6 +18,8 @@
 pub mod engine;
 pub mod layout;
 pub mod meta;
+pub mod notify;
+pub mod osc;
 pub mod pane;
 pub mod server;
 pub mod term_state;

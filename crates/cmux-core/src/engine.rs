@@ -5,17 +5,20 @@
 //! pull a fresh `Snapshot`.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use cmux_protocol::{
-    LayoutNode, PaneId, PaneInfo, Snapshot, SplitAxis, WorkspaceId, WorkspaceInfo,
+    LayoutNode, NotifyKind, PaneId, PaneInfo, PaneNotification, Snapshot, SplitAxis,
+    WorkspaceId, WorkspaceInfo,
 };
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 use tokio::sync::broadcast;
 
 use crate::layout;
+use crate::osc::OscEvent;
 use crate::pane::{OutputSink, Pane};
 
 /// Events fanned out to the Tauri layer (→ webview) and other listeners.
@@ -23,6 +26,8 @@ use crate::pane::{OutputSink, Pane};
 pub enum EngineEvent {
     /// Engine state changed; listeners should pull a fresh `Snapshot`.
     StateChanged,
+    /// A pane wants attention right now (drives the UI highlight ring).
+    PaneRing(PaneId),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -54,6 +59,7 @@ pub struct Engine {
     panes: RwLock<HashMap<PaneId, Arc<Pane>>>,
     workspaces: RwLock<Workspaces>,
     events: broadcast::Sender<EngineEvent>,
+    window_focused: AtomicBool,
 }
 
 impl Engine {
@@ -63,6 +69,7 @@ impl Engine {
             panes: RwLock::new(HashMap::new()),
             workspaces: RwLock::new(Workspaces::default()),
             events,
+            window_focused: AtomicBool::new(true),
         })
     }
 
@@ -88,12 +95,32 @@ impl Engine {
             format!("터미널 {}", ws.pane_created_count)
         };
         let engine = Arc::downgrade(self);
-        let pane = Pane::spawn(id, workspace, name, cols, rows, cwd, move || {
-            // Shell exited → remove the pane from its layout, like tmux.
-            if let Some(engine) = engine.upgrade() {
-                let _ = engine.close_pane(id);
-            }
-        })?;
+        let engine_for_osc = Arc::downgrade(self);
+        let pane = Pane::spawn(
+            id,
+            workspace,
+            name,
+            cols,
+            rows,
+            cwd,
+            move || {
+                // Shell exited → remove the pane from its layout, like tmux.
+                if let Some(engine) = engine.upgrade() {
+                    let _ = engine.close_pane(id);
+                }
+            },
+            move |event| {
+                if let Some(engine) = engine_for_osc.upgrade() {
+                    let (kind, title, body) = match event {
+                        OscEvent::Bell => (NotifyKind::Bell, None, None),
+                        OscEvent::Notify { title, body } => {
+                            (NotifyKind::Attention, title, body)
+                        }
+                    };
+                    engine.notify_pane(id, kind, title, body);
+                }
+            },
+        )?;
         self.panes.write().insert(id, Arc::clone(&pane));
         Ok(pane)
     }
@@ -151,7 +178,13 @@ impl Engine {
             return Err(EngineError::WorkspaceNotFound(id));
         }
         ws.active = Some(id);
+        let visible_pane = ws.map.get(&id).map(|s| s.active_pane);
         drop(ws);
+        if let Some(pane) = visible_pane {
+            if let Ok(pane) = self.pane(pane) {
+                *pane.notification.lock() = None;
+            }
+        }
         self.notify_state_changed();
         Ok(())
     }
@@ -242,6 +275,66 @@ impl Engine {
         Ok(())
     }
 
+    // -- notifications --------------------------------------------------------
+
+    /// Is this pane the one the user is looking at right now?
+    fn pane_visible_and_focused(&self, id: PaneId) -> bool {
+        if !self.window_focused.load(Ordering::SeqCst) {
+            return false;
+        }
+        let Ok(pane) = self.pane(id) else { return false };
+        let ws = self.workspaces.read();
+        ws.active == Some(pane.workspace)
+            && ws.map.get(&pane.workspace).is_some_and(|s| s.active_pane == id)
+    }
+
+    /// Notification pipeline shared by OSC detection and the socket API.
+    pub fn notify_pane(
+        &self,
+        id: PaneId,
+        kind: NotifyKind,
+        title: Option<String>,
+        body: Option<String>,
+    ) {
+        // The user is already looking at this pane — nothing to announce.
+        if self.pane_visible_and_focused(id) {
+            return;
+        }
+        let Ok(pane) = self.pane(id) else { return };
+        let title = title.unwrap_or_else(|| crate::notify::default_title(kind).to_string());
+        *pane.notification.lock() = Some(PaneNotification {
+            kind,
+            title: Some(title.clone()),
+            body: body.clone(),
+        });
+        crate::notify::send_desktop(kind, &title, body.as_deref().unwrap_or(""));
+        let _ = self.events.send(EngineEvent::PaneRing(id));
+        self.notify_state_changed();
+    }
+
+    fn clear_notification(&self, id: PaneId) {
+        if let Ok(pane) = self.pane(id) {
+            if pane.notification.lock().take().is_some() {
+                self.notify_state_changed();
+            }
+        }
+    }
+
+    /// Window focus changes (from the windowing layer). Regaining focus
+    /// clears the visible pane's pending notification.
+    pub fn set_window_focused(&self, focused: bool) {
+        self.window_focused.store(focused, Ordering::SeqCst);
+        if focused {
+            let visible = {
+                let ws = self.workspaces.read();
+                ws.active.and_then(|a| ws.map.get(&a)).map(|s| s.active_pane)
+            };
+            if let Some(pane) = visible {
+                self.clear_notification(pane);
+            }
+        }
+    }
+
     pub fn rename_pane(&self, id: PaneId, name: String) -> Result<(), EngineError> {
         *self.pane(id)?.name.lock() = name;
         self.notify_state_changed();
@@ -258,6 +351,8 @@ impl Engine {
         state.active_pane = id;
         ws.active = Some(pane.workspace);
         drop(ws);
+        // Looking at it now — its pending notification is acknowledged.
+        *pane.notification.lock() = None;
         self.notify_state_changed();
         Ok(())
     }
@@ -327,7 +422,7 @@ impl Engine {
                     workspace: p.workspace,
                     name: p.name.lock().clone(),
                     meta: p.meta.lock().clone(),
-                    notification: None, // M4
+                    notification: p.notification.lock().clone(),
                     exited: p.has_exited(),
                 })
                 .collect(),

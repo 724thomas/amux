@@ -158,12 +158,20 @@
                 {#if renaming?.kind === "pane" && renaming.id === paneId}
                   {@render renameInput()}
                 {:else}
-                  <span class="pane-name">{pane?.name ?? "터미널"}</span>
+                  <span class="pane-name">
+                    {pane?.name ?? "터미널"}
+                    {#if pane?.notification}<span class="badge"></span>{/if}
+                  </span>
                   <span class="pane-detail">
                     {#if pane?.meta.git_branch}<span class="branch">⎇ {pane.meta.git_branch}</span
                       >{/if}
                     <span class="cwd">{shortCwd(pane?.meta.cwd ?? null)}</span>
                   </span>
+                  {#if pane?.notification}
+                    <span class="notif-text">
+                      {pane.notification.body ?? pane.notification.title ?? "알림"}
+                    </span>
+                  {/if}
                 {/if}
               </button>
             </li>
@@ -265,6 +273,23 @@
   }
   .pane-name {
     font-size: 0.8rem;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .badge {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #7dcfff;
+    flex-shrink: 0;
+  }
+  .notif-text {
+    font-size: 0.7rem;
+    color: #7dcfff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .pane-detail {
     display: flex;

@@ -3,8 +3,12 @@
   // and pane actions merged into the terminal's context menu.
   import Terminal from "./Terminal.svelte";
   import { closePane, focusPane, splitPane, type PaneId } from "./ipc";
+  import { paneInfo, rings } from "./state.svelte";
 
   let { pane, focused }: { pane: PaneId; focused: boolean } = $props();
+
+  const ringing = $derived(rings.active[pane] === true);
+  const pending = $derived(paneInfo(pane)?.notification != null);
 
   const extraActions = [
     { label: "오른쪽으로 분할", run: () => void splitPane(pane, "horizontal") },
@@ -16,11 +20,15 @@
 <section
   class="pane"
   class:focused
+  class:ringing
   onpointerdowncapture={() => {
     if (!focused) void focusPane(pane);
   }}
 >
   <Terminal {pane} {focused} {extraActions} />
+  {#if pending}
+    <span class="pending-dot" title="알림 대기 중"></span>
+  {/if}
   <div class="toolbar">
     <button title="오른쪽으로 분할 (Ctrl+Shift+D)" onclick={() => void splitPane(pane, "horizontal")}>
       ◫
@@ -47,6 +55,30 @@
   .pane.focused {
     outline: 1px solid #7aa2f7;
     z-index: 1;
+  }
+  .pane.ringing {
+    animation: ring-pulse 0.75s ease-in-out 4;
+  }
+  @keyframes ring-pulse {
+    0%,
+    100% {
+      outline: 2px solid transparent;
+      outline-offset: -2px;
+    }
+    50% {
+      outline: 2px solid #7dcfff;
+      outline-offset: -2px;
+    }
+  }
+  .pending-dot {
+    position: absolute;
+    top: 6px;
+    left: 8px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #7dcfff;
+    z-index: 10;
   }
   .toolbar {
     position: absolute;
