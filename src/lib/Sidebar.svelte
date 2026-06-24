@@ -20,10 +20,20 @@
     type WorkspaceInfo,
   } from "./ipc";
   import { app, focusTerm, paneInfo } from "./state.svelte";
-  import { adjustFontSize, setTheme, settings } from "./settings.svelte";
+  import { adjustFontSize, setNotifHeight, setTheme, settings } from "./settings.svelte";
   import { THEMES, themeById } from "./themes";
 
   const snapshot = $derived(app.snapshot);
+
+  // Animated "processing" indicator: processing. → .. → ... → . (cycles).
+  let dots = $state(1);
+  $effect(() => {
+    const t = setInterval(() => (dots = (dots % 3) + 1), 450);
+    return () => clearInterval(t);
+  });
+
+  // Drag-resize the notification panel; growing it eats into the workspace list.
+  let notifDrag = $state<{ y: number; h: number } | null>(null);
 
   type MenuTarget =
     | { kind: "workspace"; id: WorkspaceId; name: string }
@@ -208,7 +218,7 @@
                     {pane?.name ?? "터미널"}
                     {#if pane}
                       <span class="status {pane.status}">
-                        {pane.status === "processing" ? "processing…" : pane.status}
+                        {pane.status === "processing" ? "processing" + ".".repeat(dots) : pane.status}
                       </span>
                     {/if}
                     {#if pane?.notification}<span class="badge"></span>{/if}
@@ -218,11 +228,6 @@
                       >{/if}
                     <span class="cwd">{shortCwd(pane?.meta.cwd ?? null)}</span>
                   </span>
-                  {#if pane?.notification}
-                    <span class="notif-text">
-                      {pane.notification.body ?? pane.notification.title ?? "알림"}
-                    </span>
-                  {/if}
                 {/if}
               </button>
             </li>
@@ -233,8 +238,25 @@
   </ul>
   <button class="add" onclick={() => void createWorkspace()}>+ 새 워크스페이스</button>
 
+  <!-- 알림 패널 높이 조절 핸들 (위로 드래그하면 패널이 커지고 워크스페이스 영역이 줄어듦) -->
+  <div
+    class="notif-resizer"
+    class:dragging={notifDrag !== null}
+    role="separator"
+    aria-orientation="horizontal"
+    onpointerdown={(e) => {
+      notifDrag = { y: e.clientY, h: settings.notifHeight };
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    }}
+    onpointermove={(e) => {
+      if (notifDrag) setNotifHeight(notifDrag.h + (notifDrag.y - e.clientY));
+    }}
+    onpointerup={() => (notifDrag = null)}
+    onpointercancel={() => (notifDrag = null)}
+  ></div>
+
   <!-- 하단: 알림 히스토리 -->
-  <div class="notif-panel">
+  <div class="notif-panel" style="height: {settings.notifHeight}px">
     <div class="notif-head">
       <span>알림</span>
       {#if (snapshot?.notifications.length ?? 0) > 0}
@@ -322,13 +344,23 @@
   .workspaces {
     flex: 1;
     overflow-y: auto;
-    min-height: 30%;
+    min-height: 0;
+  }
+  .notif-resizer {
+    flex: 0 0 5px;
+    cursor: row-resize;
+    background: var(--border);
+    touch-action: none;
+  }
+  .notif-resizer:hover,
+  .notif-resizer.dragging {
+    background: var(--accent);
   }
   .notif-panel {
     display: flex;
     flex-direction: column;
-    max-height: 40%;
-    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+    min-height: 0;
   }
   .notif-head {
     display: flex;
@@ -494,13 +526,6 @@
   .status.waiting {
     color: var(--yellow);
     background: color-mix(in srgb, var(--yellow) 15%, transparent);
-  }
-  .notif-text {
-    font-size: 0.7rem;
-    color: var(--info);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
   .pane-detail {
     display: flex;

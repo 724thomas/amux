@@ -665,14 +665,20 @@ impl Engine {
         old != new
     }
 
-    /// The user is looking at this pane now — processed turns idle.
+    /// The user is looking at this pane now: in-flight `processed` and
+    /// input-`waiting` both resolve to idle (focusing acknowledges the wait),
+    /// and this pane's notification history clears so unread entries in the
+    /// sidebar panel don't pile up.
     fn mark_pane_seen(&self, id: PaneId) {
-        if let Ok(pane) = self.pane(id) {
+        let Ok(pane) = self.pane(id) else { return };
+        {
             let mut status = pane.status.lock();
-            if *status == PaneStatus::Processed {
+            if matches!(*status, PaneStatus::Processed | PaneStatus::Waiting) {
                 *status = PaneStatus::Idle;
             }
         }
+        *pane.waiting_since.lock() = None;
+        self.history.lock().retain(|e| e.pane != id);
     }
 
     /// Kill every pane (app shutdown).

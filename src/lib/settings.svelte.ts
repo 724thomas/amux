@@ -8,9 +8,16 @@ interface Settings {
   fontSize: number;
   sidebarWidth: number;
   theme: string;
+  /** Height (px) of the sidebar notification panel; drag-resizable. */
+  notifHeight: number;
 }
 
-const DEFAULTS: Settings = { fontSize: 14, sidebarWidth: 230, theme: "tokyo-night" };
+const DEFAULTS: Settings = {
+  fontSize: 14,
+  sidebarWidth: 230,
+  theme: "tokyo-night",
+  notifHeight: 200,
+};
 
 function load(): Settings {
   try {
@@ -47,5 +54,11 @@ export function setSidebarWidth(width: number) {
 
 export function setTheme(id: string) {
   settings.theme = id;
+  save();
+}
+
+export function setNotifHeight(px: number) {
+  const max = Math.round(window.innerHeight * 0.7);
+  settings.notifHeight = Math.min(max, Math.max(64, Math.round(px)));
   save();
 }

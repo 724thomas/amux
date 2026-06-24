@@ -11,17 +11,34 @@ AI 코딩 에이전트(Claude Code 등)를 **병렬로** 돌리기 위한 Ubuntu
 - 사이드바에 브랜치 · cwd · 리슨 포트(클릭하면 브라우저 오픈) 표시
 - 모든 조작이 마우스로 가능 (분할·닫기·이름변경·드래그 재배치·테마)
 - `amux` CLI로 외부 자동화: `ls`, `split`, `send`, `read-screen`, `notify` …
-- 색 테마 6종 (Tokyo Night 기본)
+- 색 테마 38종 (Tokyo Night 기본 · 다크/라이트)
 
 스택: Tauri 2 (Rust) + Svelte 5 + xterm.js.
+
+## 변경 내역
+
+### v0.3.0
+- **색 테마 32종 추가 (총 38종)** — Catppuccin Latte/Frappé/Macchiato, Rosé Pine(+Moon/Dawn), Everforest, Kanagawa, Ayu, One Dark/Light, Monokai Pro, Tokyo Night Storm/Day, Solarized Dark, GitHub Dark/Light, Night Owl, Nightfox, Synthwave Alpha, Cobalt2 등 (다크 24 · 라이트 8)
+- **알림·상태 UX 개선**
+  - 워크스페이스 탭의 "작업이 끝났습니다" 문구 제거 (🟢 processed 칩으로 충분)
+  - 🟡 waiting pane을 포커스하면 idle로 해제 (이전엔 waiting으로 남던 버그)
+  - 🔴 processing 칩 애니메이션 (`processing.` → `..` → `...`)
+  - 알림 패널: 해당 pane을 확인하면 그 pane 알림이 자동으로 사라짐 (누적 방지)
+  - 알림 패널 높이를 드래그로 조절 (워크스페이스 목록과 공간 배분)
+
+### v0.2.0
+- dock 아이콘에 processed 카운트 배지
+
+### v0.1.0
+- 최초 릴리스 — 워크스페이스·분할 pane, 에이전트 상태, 알림, CLI
 
 ## 설치
 
 [**Releases**](https://github.com/724thomas/amux/releases)에서 최신 `.deb`를 받아 설치합니다:
 
 ```bash
-wget https://github.com/724thomas/amux/releases/download/v0.1.0/amux_0.1.0_amd64.deb
-sudo apt install ./amux_0.1.0_amd64.deb
+wget https://github.com/724thomas/amux/releases/download/v0.3.0/amux_0.3.0_amd64.deb
+sudo apt install ./amux_0.3.0_amd64.deb
 ```
 
 - GNOME 앱 목록에 **amux** 아이콘 등록, `amux` CLI는 `/usr/bin/amux`로 설치
@@ -95,8 +112,10 @@ Claude Code는 hook 연동 시 정확하게 동작하고(아래 참고), 일반 
 
 ### 테마
 
-사이드바 하단 드롭다운에서 6종 선택: Tokyo Night(기본) · Dracula ·
-Catppuccin Mocha · Gruvbox Dark · Nord · Solarized Light.
+사이드바 하단 드롭다운에서 **38종** 선택 — Tokyo Night(기본) · Dracula ·
+Catppuccin(Mocha/Latte/Frappé/Macchiato) · Gruvbox · Nord · Solarized ·
+One Dark/Light · Rosé Pine · Everforest · Kanagawa · Ayu · Monokai Pro ·
+GitHub · Night Owl · Synthwave Alpha 등 (다크/라이트).
 터미널 16색 팔레트와 앱 전체 색이 함께 바뀌고 자동 저장됩니다.
 
 <img width="168" height="221" alt="image" src="https://github.com/user-attachments/assets/656cc4c4-9581-4f42-8235-c276346ab5ff" />
