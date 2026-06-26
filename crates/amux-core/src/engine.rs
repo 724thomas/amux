@@ -315,13 +315,37 @@ impl Engine {
         // - done (Stop hook) → work finished
         // progress/done mark the pane hook-managed: lifecycle hooks are
         // authoritative from then on, the silence heuristic stands down.
+        // Hooks are fire-and-forget shell commands, so the final PostToolUse
+        // `progress` of a turn can be *delivered* just after that turn's `Stop`
+        // `done`. A `progress` within this window after a `done` is a same-turn
+        // straggler and must not resurrect `processing`.
+        const DONE_GRACE: Duration = Duration::from_secs(2);
+
         match kind {
             NotifyKind::Attention | NotifyKind::Bell => {
+                // Mid-turn → a genuine permission/input request (waiting). But on
+                // a hook-managed pane whose turn already ended, this is Claude's
+                // idle "waiting for your input" notification firing after the
+                // task finished — it must not flip `processed` back to waiting.
+                if pane.hook_managed.load(Ordering::SeqCst)
+                    && !pane.turn_active.load(Ordering::SeqCst)
+                {
+                    self.notify_state_changed();
+                    return;
+                }
                 *pane.waiting_since.lock() = Some(std::time::Instant::now());
                 *pane.status.lock() = PaneStatus::Waiting;
             }
             NotifyKind::Progress => {
+                // Drop a same-turn straggler arriving just after `done`.
+                let straggler =
+                    (*pane.last_done_at.lock()).is_some_and(|t| t.elapsed() < DONE_GRACE);
+                if straggler {
+                    return;
+                }
                 pane.hook_managed.store(true, Ordering::SeqCst);
+                pane.turn_active.store(true, Ordering::SeqCst);
+                *pane.last_done_at.lock() = None;
                 *pane.waiting_since.lock() = None;
                 *pane.status.lock() = PaneStatus::Processing;
                 self.notify_state_changed();
@@ -329,6 +353,8 @@ impl Engine {
             }
             NotifyKind::Done => {
                 pane.hook_managed.store(true, Ordering::SeqCst);
+                pane.turn_active.store(false, Ordering::SeqCst);
+                *pane.last_done_at.lock() = Some(std::time::Instant::now());
                 *pane.waiting_since.lock() = None;
                 *pane.status.lock() =
                     if visible { PaneStatus::Idle } else { PaneStatus::Processed };
@@ -337,6 +363,8 @@ impl Engine {
                 // SessionStart hook: the app declares itself idle and
                 // hook-managed — no work in flight, heuristic stands down.
                 pane.hook_managed.store(true, Ordering::SeqCst);
+                pane.turn_active.store(false, Ordering::SeqCst);
+                *pane.last_done_at.lock() = None;
                 *pane.waiting_since.lock() = None;
                 *pane.status.lock() = PaneStatus::Idle;
                 self.notify_state_changed();
@@ -370,6 +398,10 @@ impl Engine {
                 .unwrap_or(0),
         };
         let mut history = self.history.lock();
+        // At most one entry per pane in the panel: a new notification for a
+        // pane supersedes its previous one, so finishing a task leaves exactly
+        // one notification per terminal instead of stacking attention + done.
+        history.retain(|e| e.pane != id);
         history.push_front(entry);
         history.truncate(HISTORY_CAP);
         drop(history);

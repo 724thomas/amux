@@ -58,6 +58,16 @@ pub struct Pane {
     /// the silence heuristic then stands down (TUIs like Claude Code repaint
     /// constantly, so silence never happens). Reset when the app exits.
     pub hook_managed: std::sync::atomic::AtomicBool,
+    /// A Claude turn is in flight (between a turn-starting `progress` and the
+    /// `done` that ends it). Mid-turn `attention` is a real permission/input
+    /// request → waiting; `attention` after the turn ended is Claude's idle
+    /// "waiting for your input" notification and must not override `processed`.
+    pub turn_active: std::sync::atomic::AtomicBool,
+    /// When the last `done` landed. A `progress` arriving within a short grace
+    /// window after it is a same-turn straggler (hooks are fire-and-forget, so
+    /// the final PostToolUse can be delivered just after Stop) and must not
+    /// resurrect `processing`.
+    pub last_done_at: Mutex<Option<std::time::Instant>>,
 }
 
 #[derive(Clone, Copy)]
@@ -135,6 +145,8 @@ impl Pane {
             status: Mutex::new(PaneStatus::default()),
             waiting_since: Mutex::new(None),
             hook_managed: std::sync::atomic::AtomicBool::new(false),
+            turn_active: std::sync::atomic::AtomicBool::new(false),
+            last_done_at: Mutex::new(None),
         });
 
         // Reader thread: PTY → term state → tail buffer → sink.
