@@ -2,7 +2,8 @@
   import { onMount } from "svelte";
   import Sidebar from "./lib/Sidebar.svelte";
   import SplitNode from "./lib/SplitNode.svelte";
-  import { app, initState, broadcast, activeWorkspacePaneCount } from "./lib/state.svelte";
+  import Palette from "./lib/Palette.svelte";
+  import { app, initState, broadcast, palette, activeWorkspacePaneCount } from "./lib/state.svelte";
   import { handleKey } from "./lib/keymap";
   import { setSidebarWidth, settings } from "./lib/settings.svelte";
   import { themeById } from "./lib/themes";
@@ -42,6 +43,10 @@
     BROADCAST — 입력이 {bcastCount}개 pane에 동시 전송됩니다
     <span class="hint">클릭 · Ctrl+Shift+B 해제</span>
   </button>
+{/if}
+
+{#if palette.open}
+  <Palette />
 {/if}
 
 <div class="shell">

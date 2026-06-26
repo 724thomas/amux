@@ -89,6 +89,9 @@ export function paneInfo(id: PaneId): PaneInfo | null {
 // never persists across restarts, so it can't surprise you on a fresh launch.
 export const broadcast = $state<{ on: boolean }>({ on: false });
 
+// Command Palette (Ctrl+Shift+P) open/closed. Transient.
+export const palette = $state<{ open: boolean }>({ open: false });
+
 /** Live, non-exited panes in the active workspace other than `origin`. */
 export function broadcastTargets(origin: PaneId): PaneId[] {
   const snap = app.snapshot;

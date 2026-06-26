@@ -10,7 +10,7 @@ import {
   type LayoutNode,
   type PaneId,
 } from "./ipc";
-import { activePane, activeWorkspace, app, broadcast } from "./state.svelte";
+import { activePane, activeWorkspace, app, broadcast, palette } from "./state.svelte";
 import { adjustFontSize, resetFontSize } from "./settings.svelte";
 
 interface Rect {
@@ -106,6 +106,9 @@ export function handleKey(e: KeyboardEvent): boolean {
           (e as KeyboardEvent & { __amuxBcast?: boolean }).__amuxBcast = true;
           broadcast.on = !broadcast.on;
         }
+        return true;
+      case "KeyP":
+        palette.open = true;
         return true;
     }
   }
