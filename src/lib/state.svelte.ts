@@ -81,3 +81,28 @@ export function activePane(): PaneId | null {
 export function paneInfo(id: PaneId): PaneInfo | null {
   return app.snapshot?.panes.find((p) => p.id === id) ?? null;
 }
+
+// --- Broadcast (synchronize-panes) -----------------------------------------
+// When on, keyboard input to the focused pane is mirrored to every other live
+// pane in the ACTIVE workspace — "type once, command every agent". Transient
+// and default-off: a powerful mode you opt into per session (Ctrl+Shift+B); it
+// never persists across restarts, so it can't surprise you on a fresh launch.
+export const broadcast = $state<{ on: boolean }>({ on: false });
+
+/** Live, non-exited panes in the active workspace other than `origin`. */
+export function broadcastTargets(origin: PaneId): PaneId[] {
+  const snap = app.snapshot;
+  const ws = snap?.active_workspace;
+  if (!snap || !ws) return [];
+  return snap.panes
+    .filter((p) => p.workspace === ws && p.id !== origin && !p.exited)
+    .map((p) => p.id);
+}
+
+/** How many panes a broadcast reaches (all live panes in the active workspace). */
+export function activeWorkspacePaneCount(): number {
+  const snap = app.snapshot;
+  const ws = snap?.active_workspace;
+  if (!snap || !ws) return 0;
+  return snap.panes.filter((p) => p.workspace === ws && !p.exited).length;
+}

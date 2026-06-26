@@ -10,7 +10,7 @@ import {
   type LayoutNode,
   type PaneId,
 } from "./ipc";
-import { activePane, activeWorkspace, app } from "./state.svelte";
+import { activePane, activeWorkspace, app, broadcast } from "./state.svelte";
 import { adjustFontSize, resetFontSize } from "./settings.svelte";
 
 interface Rect {
@@ -98,6 +98,15 @@ export function handleKey(e: KeyboardEvent): boolean {
         if (pane) void closePane(pane);
         return true;
       }
+      case "KeyB":
+        // Broadcast toggle (synchronize-panes). Tag the event so a double
+        // dispatch (xterm's key handler + the window listener both seeing the
+        // same keydown) still flips the mode exactly once.
+        if (!(e as KeyboardEvent & { __amuxBcast?: boolean }).__amuxBcast) {
+          (e as KeyboardEvent & { __amuxBcast?: boolean }).__amuxBcast = true;
+          broadcast.on = !broadcast.on;
+        }
+        return true;
     }
   }
 

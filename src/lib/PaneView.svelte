@@ -3,12 +3,17 @@
   // pane actions in the terminal's context menu, drag-rearrange.
   import Terminal from "./Terminal.svelte";
   import { closePane, focusPane, movePane, splitPane, type PaneId, type SplitAxis } from "./ipc";
-  import { paneInfo, rings } from "./state.svelte";
+  import { app, paneInfo, rings, broadcast } from "./state.svelte";
 
   let { pane, focused }: { pane: PaneId; focused: boolean } = $props();
 
   const ringing = $derived(rings.active[pane] === true);
   const pending = $derived(paneInfo(pane)?.notification != null);
+  // Broadcast: this pane is "armed" when broadcast mode is on and it lives in
+  // the active workspace (the only panes a broadcast actually reaches).
+  const broadcasting = $derived(
+    broadcast.on && paneInfo(pane)?.workspace === app.snapshot?.active_workspace,
+  );
 
   type DropZone = "left" | "right" | "top" | "bottom";
   let dropZone = $state<DropZone | null>(null);
@@ -50,6 +55,7 @@
   class="pane"
   class:focused
   class:ringing
+  class:broadcasting
   role="group"
   onpointerdowncapture={() => {
     if (!focused) void focusPane(pane);
@@ -133,6 +139,43 @@
     50% {
       outline: 2px solid var(--info);
       outline-offset: -2px;
+    }
+  }
+
+  /* Broadcast mode: every receiving pane wears a pulsing electric frame so it's
+     unmistakable that input is being mirrored here. The outline paints over the
+     terminal (same trick the focus ring uses); ::after adds an inner glow.
+     Declared after .pane.focused so a focused + broadcasting pane shows this. */
+  .pane.broadcasting {
+    outline: 2px solid var(--info);
+    outline-offset: -2px;
+    animation: bcast-frame 1.4s ease-in-out infinite;
+  }
+  @keyframes bcast-frame {
+    0%,
+    100% {
+      outline-color: color-mix(in srgb, var(--info) 45%, transparent);
+    }
+    50% {
+      outline-color: var(--info);
+    }
+  }
+  .pane.broadcasting::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    pointer-events: none;
+    box-shadow: inset 0 0 18px -3px color-mix(in srgb, var(--info) 55%, transparent);
+    animation: bcast-glow 1.4s ease-in-out infinite;
+  }
+  @keyframes bcast-glow {
+    0%,
+    100% {
+      opacity: 0.5;
+    }
+    50% {
+      opacity: 1;
     }
   }
   .pending-dot {

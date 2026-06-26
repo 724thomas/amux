@@ -14,7 +14,7 @@
   import { handleKey } from "./keymap";
   import { adjustFontSize, settings } from "./settings.svelte";
   import { themeById } from "./themes";
-  import { paneInfo, registerTermFocus } from "./state.svelte";
+  import { paneInfo, registerTermFocus, broadcast, broadcastTargets } from "./state.svelte";
 
   export interface MenuAction {
     label: string;
@@ -231,6 +231,12 @@
     term.onData((data) => {
       clearKeyboardSelection();
       void writePane(pane, data);
+      // Broadcast (synchronize-panes): mirror this pane's input to every other
+      // live pane in the workspace. Only the focused pane originates; writePane
+      // feeds the PTY (not xterm.onData), so mirrored panes never echo back.
+      if (broadcast.on && focused) {
+        for (const target of broadcastTargets(pane)) void writePane(target, data);
+      }
     });
 
     let resizeRaf = 0;
