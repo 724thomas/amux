@@ -22,6 +22,7 @@
   import { app, focusTerm, paneInfo } from "./state.svelte";
   import { adjustFontSize, setNotifHeight, setTheme, settings } from "./settings.svelte";
   import { THEMES, themeById } from "./themes";
+  import AttentionRail from "./AttentionRail.svelte";
 
   const snapshot = $derived(app.snapshot);
 
@@ -148,6 +149,7 @@
     e.preventDefault();
   }}
 >
+  <AttentionRail />
   <ul class="workspaces">
     {#each snapshot?.workspaces ?? [] as ws, index (ws.id)}
       {@const ports = wsPorts(ws)}

@@ -16,6 +16,22 @@ export const app = $state<{ snapshot: Snapshot | null }>({ snapshot: null });
 export const rings = $state<{ active: Record<PaneId, boolean> }>({ active: {} });
 const ringTimers = new Map<PaneId, ReturnType<typeof setTimeout>>();
 
+// Who-Needs-Me: per-pane time-in-current-status, derived by diffing snapshots
+// on the frontend (no engine change). `clock` ticks once a second so the
+// "how long" timers update live.
+export const clock = $state<{ now: number }>({ now: Date.now() });
+const statusSince = new Map<PaneId, { status: string; since: number }>();
+function trackStatus(snap: Snapshot) {
+  const now = Date.now();
+  const seen = new Set<PaneId>();
+  for (const p of snap.panes) {
+    seen.add(p.id);
+    const prev = statusSince.get(p.id);
+    if (!prev || prev.status !== p.status) statusSince.set(p.id, { status: p.status, since: now });
+  }
+  for (const id of [...statusSince.keys()]) if (!seen.has(id)) statusSince.delete(id);
+}
+
 // Each Terminal registers how to focus its xterm so that switching the
 // active pane by ANY means (sidebar click, shortcut, CLI, split, close)
 // lands the keyboard in the right terminal without an extra click.
@@ -46,11 +62,14 @@ export async function initState() {
   await listen<Snapshot>("state:snapshot", (event) => {
     const before = activeKey(app.snapshot);
     app.snapshot = event.payload;
+    trackStatus(event.payload);
     if (activeKey(app.snapshot) !== before) {
       // After the DOM unhides the workspace, put the keyboard in it.
       void tick().then(() => focusTerm(activePane()));
     }
   });
+  // Live 1s clock so the Who-Needs-Me timers tick.
+  setInterval(() => (clock.now = Date.now()), 1000);
   await listen<PaneId>("notify:ring", (event) => {
     const pane = event.payload;
     rings.active[pane] = true;
@@ -65,6 +84,7 @@ export async function initState() {
   // The engine creates the initial workspace (avoids double-create when the
   // dev server forces a page reload mid-bootstrap).
   app.snapshot = await getSnapshot();
+  if (app.snapshot) trackStatus(app.snapshot);
   void tick().then(() => focusTerm(activePane()));
 }
 
@@ -91,6 +111,38 @@ export const broadcast = $state<{ on: boolean }>({ on: false });
 
 // Command Palette (Ctrl+Shift+P) open/closed. Transient.
 export const palette = $state<{ open: boolean }>({ open: false });
+
+// --- Who-Needs-Me list ------------------------------------------------------
+export interface AttentionItem {
+  pane: PaneId;
+  name: string;
+  workspace: string;
+  status: "waiting" | "processed";
+  since: number;
+}
+
+/** Panes that want the user: 🟡 waiting first, then 🟢 processed; oldest first. */
+export function attentionItems(): AttentionItem[] {
+  const snap = app.snapshot;
+  if (!snap) return [];
+  const out: AttentionItem[] = [];
+  for (const p of snap.panes) {
+    if (p.exited) continue;
+    if (p.status === "waiting" || p.status === "processed") {
+      const wsName = snap.workspaces.find((w) => w.id === p.workspace)?.name ?? "";
+      out.push({
+        pane: p.id,
+        name: p.name,
+        workspace: wsName,
+        status: p.status,
+        since: statusSince.get(p.id)?.since ?? clock.now,
+      });
+    }
+  }
+  const rank = (s: string) => (s === "waiting" ? 0 : 1);
+  out.sort((a, b) => rank(a.status) - rank(b.status) || a.since - b.since);
+  return out;
+}
 
 /** Live, non-exited panes in the active workspace other than `origin`. */
 export function broadcastTargets(origin: PaneId): PaneId[] {
