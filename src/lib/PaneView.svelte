@@ -15,6 +15,20 @@
     broadcast.on && paneInfo(pane)?.workspace === app.snapshot?.active_workspace,
   );
 
+  // Done-Shockwave: when a pane finishes unseen (status → processed), fire a
+  // one-shot radial burst to pull the eye to the agent that just shipped.
+  // Bumping `burst` re-keys the effect element below, restarting the animation.
+  const status = $derived(paneInfo(pane)?.status);
+  let burst = $state(0);
+  let prevStatus: string | undefined;
+  $effect(() => {
+    const s = status;
+    if (s === "processed" && prevStatus !== undefined && prevStatus !== "processed") {
+      burst++;
+    }
+    prevStatus = s;
+  });
+
   type DropZone = "left" | "right" | "top" | "bottom";
   let dropZone = $state<DropZone | null>(null);
 
@@ -76,6 +90,17 @@
   {#if dropZone}
     <div class="drop-overlay {dropZone}"></div>
   {/if}
+  {#key burst}
+    {#if burst > 0}
+      <div class="fx" aria-hidden="true">
+        <span class="ring"></span>
+        <span class="flash"></span>
+        {#each [0, 1, 2, 3, 4, 5, 6, 7] as i (i)}
+          <span class="spark" style="--a:{i * 45}deg"></span>
+        {/each}
+      </div>
+    {/if}
+  {/key}
   <div class="toolbar">
     <button
       class="drag-handle"
@@ -176,6 +201,94 @@
     }
     50% {
       opacity: 1;
+    }
+  }
+
+  /* Done-Shockwave — a one-shot radial burst when an agent finishes unseen.
+     Pure transform/opacity (GPU-composited), pointer-events:none, above the
+     terminal but below the toolbar. Green to match the "processed" chip. */
+  .fx {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 0;
+    height: 0;
+    z-index: 6;
+    pointer-events: none;
+  }
+  .fx .ring {
+    position: absolute;
+    left: -22px;
+    top: -22px;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    border: 2.5px solid var(--green);
+    transform: scale(0.2);
+    opacity: 0.9;
+    animation: sw-ring 0.85s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+  }
+  @keyframes sw-ring {
+    0% {
+      transform: scale(0.2);
+      opacity: 0.9;
+    }
+    100% {
+      transform: scale(12);
+      opacity: 0;
+      border-width: 0.5px;
+    }
+  }
+  .fx .flash {
+    position: absolute;
+    left: -32px;
+    top: -32px;
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    background: radial-gradient(
+      circle,
+      color-mix(in srgb, var(--green) 55%, transparent),
+      transparent 70%
+    );
+    transform: scale(0.3);
+    opacity: 0.85;
+    animation: sw-flash 0.5s ease-out forwards;
+  }
+  @keyframes sw-flash {
+    0% {
+      transform: scale(0.3);
+      opacity: 0.85;
+    }
+    100% {
+      transform: scale(2.4);
+      opacity: 0;
+    }
+  }
+  .fx .spark {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 4px;
+    height: 4px;
+    margin: -2px 0 0 -2px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: sw-spark 0.7s ease-out forwards;
+  }
+  @keyframes sw-spark {
+    0% {
+      transform: rotate(var(--a)) translateY(-6px) scale(1);
+      opacity: 1;
+    }
+    100% {
+      transform: rotate(var(--a)) translateY(-72px) scale(0.3);
+      opacity: 0;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .fx {
+      display: none;
     }
   }
   .pending-dot {
