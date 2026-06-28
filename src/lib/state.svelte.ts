@@ -112,6 +112,70 @@ export const broadcast = $state<{ on: boolean }>({ on: false });
 // Command Palette (Ctrl+Shift+P) open/closed. Transient.
 export const palette = $state<{ open: boolean }>({ open: false });
 
+// --- Dashboard (Mission Control) -------------------------------------------
+// A JARVIS-style full-screen overlay (Ctrl+Shift+A) showing every live agent
+// across all workspaces at a glance. Transient.
+export const dashboard = $state<{ open: boolean }>({ open: false });
+
+export interface AgentTile {
+  pane: PaneId;
+  name: string;
+  workspace: string;
+  workspaceId: string;
+  status: string;
+  since: number;
+  branch: string | null;
+  cwd: string | null;
+}
+
+/** Every live agent (pane) across all workspaces, for the dashboard grid. */
+export function dashboardAgents(): AgentTile[] {
+  const snap = app.snapshot;
+  if (!snap) return [];
+  const out: AgentTile[] = [];
+  for (const p of snap.panes) {
+    if (p.exited) continue;
+    const ws = snap.workspaces.find((w) => w.id === p.workspace);
+    out.push({
+      pane: p.id,
+      name: p.name,
+      workspace: ws?.name ?? "",
+      workspaceId: p.workspace,
+      status: p.status,
+      since: statusSince.get(p.id)?.since ?? clock.now,
+      branch: p.meta.git_branch ?? null,
+      cwd: p.meta.cwd ?? null,
+    });
+  }
+  // waiting → processed → processing → idle, then oldest-in-status first.
+  const rank = (s: string) =>
+    s === "waiting" ? 0 : s === "processed" ? 1 : s === "processing" ? 2 : 3;
+  out.sort((a, b) => rank(a.status) - rank(b.status) || a.since - b.since);
+  return out;
+}
+
+/** Aggregate live-agent counts by status, for the dashboard header / strip. */
+export function statusCounts(): {
+  processing: number;
+  waiting: number;
+  processed: number;
+  idle: number;
+  total: number;
+} {
+  const c = { processing: 0, waiting: 0, processed: 0, idle: 0, total: 0 };
+  const snap = app.snapshot;
+  if (!snap) return c;
+  for (const p of snap.panes) {
+    if (p.exited) continue;
+    c.total++;
+    if (p.status === "processing") c.processing++;
+    else if (p.status === "waiting") c.waiting++;
+    else if (p.status === "processed") c.processed++;
+    else if (p.status === "idle") c.idle++;
+  }
+  return c;
+}
+
 // --- Who-Needs-Me list ------------------------------------------------------
 export interface AttentionItem {
   pane: PaneId;

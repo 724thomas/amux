@@ -10,7 +10,7 @@ import {
   type LayoutNode,
   type PaneId,
 } from "./ipc";
-import { activePane, activeWorkspace, app, broadcast, palette } from "./state.svelte";
+import { activePane, activeWorkspace, app, broadcast, palette, dashboard } from "./state.svelte";
 import { adjustFontSize, resetFontSize } from "./settings.svelte";
 
 interface Rect {
@@ -78,6 +78,12 @@ function cycleWorkspace(offset: number) {
 export function handleKey(e: KeyboardEvent): boolean {
   if (e.type !== "keydown") return false;
 
+  // Dashboard overlay is modal: Esc closes it.
+  if (dashboard.open && e.key === "Escape") {
+    dashboard.open = false;
+    return true;
+  }
+
   if (e.ctrlKey && e.shiftKey && !e.altKey) {
     switch (e.code) {
       case "KeyT":
@@ -110,6 +116,16 @@ export function handleKey(e: KeyboardEvent): boolean {
       case "KeyP":
         palette.open = true;
         return true;
+      case "KeyA": {
+        // Dashboard (Mission Control) overlay toggle. Guard against the double
+        // dispatch (xterm's key handler + the window listener both see this).
+        const ev = e as KeyboardEvent & { __amuxDash?: boolean };
+        if (!ev.__amuxDash) {
+          ev.__amuxDash = true;
+          dashboard.open = !dashboard.open;
+        }
+        return true;
+      }
     }
   }
 
