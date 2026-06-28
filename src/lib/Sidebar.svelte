@@ -2,10 +2,10 @@
   // Vertical list: workspaces with their terminals nested beneath
   // (워크스페이스 1 → 터미널 1, 터미널 2 ...). Mouse-first: click to switch,
   // drag to reorder workspaces, right-click to rename/close, port chips
-  // open the browser, + creates a workspace.
+  // open the browser, + creates a workspace. The bottom panel is the
+  // "지금 봐야 할 에이전트" triage list (손길 필요한 pane 우선순위).
   import { openUrl } from "@tauri-apps/plugin-opener";
   import {
-    clearNotificationHistory,
     closePane,
     closeWorkspace,
     createWorkspace,
@@ -19,12 +19,13 @@
     type WorkspaceId,
     type WorkspaceInfo,
   } from "./ipc";
-  import { app, focusTerm, paneInfo } from "./state.svelte";
+  import { app, attentionItems, clock, focusTerm, paneInfo } from "./state.svelte";
   import { adjustFontSize, setNotifHeight, setTheme, settings } from "./settings.svelte";
   import { THEMES, themeById } from "./themes";
-  import AttentionRail from "./AttentionRail.svelte";
 
   const snapshot = $derived(app.snapshot);
+  // 지금 봐야 할 에이전트 (🟡 waiting → 🟢 processed, 오래된 순) — 하단 패널.
+  const attn = $derived(attentionItems());
 
   // Animated "processing" indicator: processing. → .. → ... → . (cycles).
   let dots = $state(1);
@@ -33,8 +34,8 @@
     return () => clearInterval(t);
   });
 
-  // Drag-resize the notification panel; growing it eats into the workspace list.
-  let notifDrag = $state<{ y: number; h: number } | null>(null);
+  // Drag-resize the bottom panel; growing it eats into the workspace list.
+  let panelDrag = $state<{ y: number; h: number } | null>(null);
 
   type MenuTarget =
     | { kind: "workspace"; id: WorkspaceId; name: string }
@@ -94,24 +95,10 @@
     else void closePane(target.id);
   }
 
-  function fmtTime(atMs: number): string {
-    const d = new Date(atMs);
-    const hh = String(d.getHours()).padStart(2, "0");
-    const mm = String(d.getMinutes()).padStart(2, "0");
-    return `${hh}:${mm}`;
-  }
-
-  function notifIcon(kind: string): string {
-    switch (kind) {
-      case "attention":
-        return "●";
-      case "done":
-        return "✓";
-      case "bell":
-        return "♪";
-      default:
-        return "·";
-    }
+  // Live mm:ss since the status began, for the attention rows.
+  function fmt(since: number): string {
+    const s = Math.max(0, Math.floor((clock.now - since) / 1000));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
   }
 </script>
 
@@ -149,7 +136,6 @@
     e.preventDefault();
   }}
 >
-  <AttentionRail />
   <ul class="workspaces">
     {#each snapshot?.workspaces ?? [] as ws, index (ws.id)}
       {@const ports = wsPorts(ws)}
@@ -240,45 +226,49 @@
   </ul>
   <button class="add" onclick={() => void createWorkspace()}>+ 새 워크스페이스</button>
 
-  <!-- 알림 패널 높이 조절 핸들 (위로 드래그하면 패널이 커지고 워크스페이스 영역이 줄어듦) -->
+  <!-- 하단 패널 높이 조절 핸들 (위로 드래그하면 패널이 커지고 워크스페이스 영역이 줄어듦) -->
   <div
-    class="notif-resizer"
-    class:dragging={notifDrag !== null}
+    class="panel-resizer"
+    class:dragging={panelDrag !== null}
     role="separator"
     aria-orientation="horizontal"
     onpointerdown={(e) => {
-      notifDrag = { y: e.clientY, h: settings.notifHeight };
+      panelDrag = { y: e.clientY, h: settings.notifHeight };
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     }}
     onpointermove={(e) => {
-      if (notifDrag) setNotifHeight(notifDrag.h + (notifDrag.y - e.clientY));
+      if (panelDrag) setNotifHeight(panelDrag.h + (panelDrag.y - e.clientY));
     }}
-    onpointerup={() => (notifDrag = null)}
-    onpointercancel={() => (notifDrag = null)}
+    onpointerup={() => (panelDrag = null)}
+    onpointercancel={() => (panelDrag = null)}
   ></div>
 
-  <!-- 하단: 알림 히스토리 -->
-  <div class="notif-panel" style="height: {settings.notifHeight}px">
-    <div class="notif-head">
-      <span>알림</span>
-      {#if (snapshot?.notifications.length ?? 0) > 0}
-        <button class="notif-clear" onclick={() => void clearNotificationHistory()}>지우기</button>
-      {/if}
+  <!-- 하단: 지금 봐야 할 에이전트 (손길 필요한 pane 우선순위 — 클릭 시 점프) -->
+  <div class="attn-panel" style="height: {settings.notifHeight}px">
+    <div class="attn-head">
+      <span class="warn">⚠</span>
+      <span>지금 봐야 할 에이전트</span>
+      {#if attn.length > 0}<span class="attn-count">{attn.length}</span>{/if}
     </div>
-    <ul class="notif-list">
-      {#each snapshot?.notifications ?? [] as n (n.at_ms + n.pane)}
+    <ul class="attn-list">
+      {#each attn as it (it.pane)}
         <li>
-          <button class="notif-entry" onclick={() => void focusPane(n.pane).catch(() => {})}>
-            <span class="notif-line">
-              <span class="notif-icon {n.kind}">{notifIcon(n.kind)}</span>
-              <span class="notif-pane">{n.pane_name}</span>
-              <span class="notif-time">{fmtTime(n.at_ms)}</span>
-            </span>
-            <span class="notif-msg">{n.body ?? n.title ?? ""}</span>
+          <button
+            class="attn-entry"
+            onclick={() => {
+              void focusPane(it.pane).catch(() => {});
+              focusTerm(it.pane);
+            }}
+          >
+            <span class="attn-dot {it.status}"></span>
+            <span class="attn-nm">{it.name}</span>
+            {#if it.workspace}<span class="attn-ws">{it.workspace}</span>{/if}
+            <span class="attn-lbl">{it.status === "waiting" ? "입력 대기" : "완료·미확인"}</span>
+            <span class="attn-time">{fmt(it.since)}</span>
           </button>
         </li>
       {:else}
-        <li class="notif-empty">알림 없음</li>
+        <li class="attn-empty">손길 필요한 에이전트 없음</li>
       {/each}
     </ul>
   </div>
@@ -348,93 +338,122 @@
     overflow-y: auto;
     min-height: 0;
   }
-  .notif-resizer {
+  .panel-resizer {
     flex: 0 0 5px;
     cursor: row-resize;
     background: var(--border);
     touch-action: none;
   }
-  .notif-resizer:hover,
-  .notif-resizer.dragging {
+  .panel-resizer:hover,
+  .panel-resizer.dragging {
     background: var(--accent);
   }
-  .notif-panel {
+
+  /* ── 하단: 지금 봐야 할 에이전트 패널 ── */
+  .attn-panel {
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
     min-height: 0;
   }
-  .notif-head {
+  .attn-head {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 6px;
     padding: 6px 10px 4px;
-    font-size: 0.75rem;
+    font-size: 0.72rem;
     font-weight: 700;
-    color: var(--muted);
+    color: var(--text-2);
   }
-  .notif-clear {
-    font-size: 0.7rem;
-    color: var(--muted);
-    background: none;
-    border: none;
-    cursor: pointer;
+  .attn-head .warn {
+    color: var(--yellow);
   }
-  .notif-clear:hover {
-    color: var(--text);
+  .attn-head .attn-count {
+    margin-left: auto;
+    min-width: 16px;
+    padding: 0 6px;
+    text-align: center;
+    font-size: 0.68rem;
+    border-radius: 9px;
+    background: var(--yellow);
+    color: var(--bg);
   }
-  .notif-list {
+  .attn-list {
     overflow-y: auto;
   }
-  .notif-empty {
+  .attn-empty {
     padding: 4px 10px 8px;
     font-size: 0.72rem;
     color: var(--border-2);
   }
-  .notif-entry {
+  .attn-entry {
     display: flex;
-    flex-direction: column;
-    gap: 1px;
+    align-items: center;
+    gap: 7px;
     width: 100%;
-    padding: 4px 10px;
+    padding: 5px 10px;
     text-align: left;
     background: none;
     border: none;
+    color: var(--text);
     cursor: pointer;
+    font-size: 0.74rem;
   }
-  .notif-entry:hover {
-    background: var(--surface-2);
+  .attn-entry:hover {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
   }
-  .notif-line {
-    display: flex;
-    gap: 6px;
-    align-items: baseline;
-    font-size: 0.72rem;
+  .attn-dot {
+    flex-shrink: 0;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
   }
-  .notif-icon.attention {
-    color: var(--red);
+  .attn-dot.waiting {
+    background: var(--yellow);
+    animation: attn-pulse 1.2s ease-in-out infinite;
   }
-  .notif-icon.done {
-    color: var(--green);
+  .attn-dot.processed {
+    background: var(--green);
   }
-  .notif-icon.bell {
-    color: var(--yellow);
+  @keyframes attn-pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 transparent;
+    }
+    50% {
+      box-shadow: 0 0 7px 0 var(--yellow);
+    }
   }
-  .notif-pane {
-    color: var(--text-2);
-    font-weight: 600;
-  }
-  .notif-time {
-    margin-left: auto;
-    color: var(--border-2);
-  }
-  .notif-msg {
-    font-size: 0.72rem;
-    color: var(--info);
-    white-space: nowrap;
+  .attn-nm {
+    flex-shrink: 0;
+    max-width: 42%;
     overflow: hidden;
+    font-weight: 600;
     text-overflow: ellipsis;
+    white-space: nowrap;
   }
+  .attn-ws {
+    flex-shrink: 0;
+    color: var(--muted);
+    font-size: 0.68rem;
+  }
+  .attn-lbl {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--muted);
+    text-align: right;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .attn-time {
+    flex-shrink: 0;
+    min-width: 30px;
+    text-align: right;
+    color: var(--text-2);
+    font-variant-numeric: tabular-nums;
+  }
+
   .entry {
     display: flex;
     align-items: center;
