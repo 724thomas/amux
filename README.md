@@ -7,15 +7,26 @@ AI 코딩 에이전트(Claude Code 등)를 **병렬로** 돌리기 위한 Ubuntu
 
 - 워크스페이스(탭) × 분할 pane — 동시 다중 터미널, 개수 제한 없음
 - 에이전트 상태 칩: 🔴 processing / 🟢 processed / 🔵 idle / 🟡 waiting
-- 데스크톱 알림 + 사이드바 알림 히스토리 (BEL, OSC 9/777, Claude Code hook)
+- 데스크톱 알림 (BEL, OSC 9/777, Claude Code hook) + 사이드바 **지금 봐야 할 에이전트** 우선순위 목록
 - 사이드바에 브랜치 · cwd · 리슨 포트(클릭하면 브라우저 오픈) 표시
 - 모든 조작이 마우스로 가능 (분할·닫기·이름변경·드래그 재배치·테마)
+- 키보드 콕핏: ⚡브로드캐스트 · ⌨명령 팔레트 · 🛰Mission Control · 워크스페이스 점프(Ctrl+Shift+1–9)
 - `amux` CLI로 외부 자동화: `ls`, `split`, `send`, `read-screen`, `notify` …
 - 색 테마 38종 (Tokyo Night 기본 · 다크/라이트)
 
 스택: Tauri 2 (Rust) + Svelte 5 + xterm.js.
 
 ## 변경 내역
+
+### v0.4.0
+- **🛰 Mission Control 대시보드 (Ctrl+Shift+A)** — 전 워크스페이스의 에이전트를 JARVIS HUD 모달로 한눈에, 노드 클릭 시 그 pane으로 점프
+- **⚡ Broadcast Input (Ctrl+Shift+B)** — 워크스페이스 전 pane에 입력 동시 전송 ("한 번 입력, 모든 에이전트")
+- **⌨ Command Palette (Ctrl+Shift+P)** — 퍼지 명령 팔레트
+- **워크스페이스 탭 점프 (Ctrl+Shift+1…9)** — 사이드바 N번째 워크스페이스로 바로 이동 (위치 기반)
+- **지금 봐야 할 에이전트 패널** — 사이드바 하단의 알림 히스토리를 대체. 손길 필요한 pane(🟡 입력 대기 → 🟢 완료·미확인)을 우선순위로 모아 라이브 타이머와 함께 보여주고 클릭 점프
+- **Thinking Waveform** — pane 출력 byte-rate에 반응하는 파동 + Arc Reactor 코어 (우상단)
+- **Done-Shockwave** — 안 보던 pane이 완료되면 초록 방사 충격파로 시선 유도
+- **pane 툴바를 상단 중앙으로** 이동 + 상태/알림 정확도 개선 (turn-lifecycle 기반 processing/processed/waiting 교정, 알림 pane당 1개)
 
 ### v0.3.0
 - **색 테마 32종 추가 (총 38종)** — Catppuccin Latte/Frappé/Macchiato, Rosé Pine(+Moon/Dawn), Everforest, Kanagawa, Ayu, One Dark/Light, Monokai Pro, Tokyo Night Storm/Day, Solarized Dark, GitHub Dark/Light, Night Owl, Nightfox, Synthwave Alpha, Cobalt2 등 (다크 24 · 라이트 8)
@@ -37,8 +48,8 @@ AI 코딩 에이전트(Claude Code 등)를 **병렬로** 돌리기 위한 Ubuntu
 [**Releases**](https://github.com/724thomas/amux/releases)에서 최신 `.deb`를 받아 설치합니다:
 
 ```bash
-wget https://github.com/724thomas/amux/releases/download/v0.3.0/amux_0.3.0_amd64.deb
-sudo apt install ./amux_0.3.0_amd64.deb
+wget https://github.com/724thomas/amux/releases/download/v0.4.0/amux_0.4.0_amd64.deb
+sudo apt install ./amux_0.4.0_amd64.deb
 ```
 
 - GNOME 앱 목록에 **amux** 아이콘 등록, `amux` CLI는 `/usr/bin/amux`로 설치
@@ -55,8 +66,11 @@ WEBKIT_DISABLE_DMABUF_RENDERER=1 amux-app
 
 ### 화면 구성
 
-왼쪽 **사이드바**(워크스페이스 → 터미널 목록 / 알림 히스토리 / 테마·폰트) +
+왼쪽 **사이드바**(워크스페이스 → 터미널 목록 / 지금 봐야 할 에이전트 / 테마·폰트) +
 오른쪽 **터미널 영역**(분할 pane). 사이드바 폭은 경계선 드래그로 조절.
+
+사이드바 하단 **지금 봐야 할 에이전트** 패널은 손길 필요한 pane(🟡 입력 대기 →
+🟢 완료·미확인)을 우선순위로 모아 라이브 타이머와 함께 보여줍니다 (행 클릭 → 점프).
 
 ### 마우스 (모든 조작 가능)
 
@@ -64,7 +78,7 @@ WEBKIT_DISABLE_DMABUF_RENDERER=1 amux-app
 |---|---|
 | 새 워크스페이스 | 사이드바 `+ 새 워크스페이스` |
 | 워크스페이스/터미널 전환 | 사이드바 항목 클릭 (키보드 포커스 자동 이동) |
-| 분할 | pane에 마우스 올리면 우상단 툴바 ◫(오른쪽) ⬓(아래) |
+| 분할 | pane에 마우스 올리면 상단 중앙 툴바 ◫(오른쪽) ⬓(아래) |
 | pane 재배치 | 툴바 ⠿를 드래그 → 다른 pane의 상/하/좌/우에 드롭 |
 | 크기 조절 | 분할선 드래그, 더블클릭하면 50:50 |
 | 이름 변경 / 닫기 | 사이드바 항목 우클릭 |
@@ -87,6 +101,10 @@ WEBKIT_DISABLE_DMABUF_RENDERER=1 amux-app
 | Ctrl+Shift+W | pane 닫기 |
 | Alt+방향키 | pane 간 이동 |
 | Ctrl+PgUp / PgDn | 워크스페이스 전환 |
+| Ctrl+Shift+1…9 | N번째 워크스페이스로 바로 이동 |
+| Ctrl+Shift+B | 브로드캐스트 (워크스페이스 전 pane 동시 입력) |
+| Ctrl+Shift+P | 명령 팔레트 |
+| Ctrl+Shift+A | Mission Control 대시보드 |
 | Shift+Enter | 줄바꿈 (Claude Code 입력창 포함) |
 | Shift+방향키 | 커서 기준 텍스트 선택 |
 | Ctrl+C / X / V | 복사(선택 시) / 잘라내기(선택 시) / 붙여넣기 |
