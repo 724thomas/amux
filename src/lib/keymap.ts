@@ -74,6 +74,14 @@ function cycleWorkspace(offset: number) {
   void focusWorkspace(snap.workspaces[next].id);
 }
 
+/** Jump to the Nth workspace by its sidebar position (0-based). Resolved live,
+ *  so the index always points at whatever currently sits in that slot — close
+ *  the 1st workspace and Ctrl+Shift+1 falls through to the new top one. */
+function focusWorkspaceByIndex(index: number) {
+  const ws = app.snapshot?.workspaces[index];
+  if (ws) void focusWorkspace(ws.id);
+}
+
 /** Returns true when the event was consumed as an app shortcut. */
 export function handleKey(e: KeyboardEvent): boolean {
   if (e.type !== "keydown") return false;
@@ -85,6 +93,11 @@ export function handleKey(e: KeyboardEvent): boolean {
   }
 
   if (e.ctrlKey && e.shiftKey && !e.altKey) {
+    // Ctrl+Shift+1..9 → jump to the Nth workspace tab by position.
+    if (/^Digit[1-9]$/.test(e.code)) {
+      focusWorkspaceByIndex(Number(e.code.slice(5)) - 1);
+      return true;
+    }
     switch (e.code) {
       case "KeyT":
         void createWorkspace();

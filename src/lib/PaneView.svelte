@@ -323,7 +323,8 @@
   .toolbar {
     position: absolute;
     top: 4px;
-    right: 8px;
+    left: 50%;
+    transform: translateX(-50%);
     display: none;
     gap: 2px;
     padding: 2px;
