@@ -31,6 +31,31 @@
   let menu = $state<{ x: number; y: number } | null>(null);
   let term = $state<Terminal>()!;
   let refit: (() => void) | undefined;
+
+  // ── Activity widgets ──────────────────────────────────────────────────
+  // Two visualizers of the SAME signal — this pane's output byte-rate (never
+  // its content): an oscilloscope waveform paired with an Arc Reactor core,
+  // top-right. The bound canvases + accent color live here; the byte counter
+  // and rAF loop live in onMount, next to the chunk stream.
+  let waveCanvas: HTMLCanvasElement;
+  let arcCanvas: HTMLCanvasElement;
+  let waveColor = "#7aa2f7"; // accent → wave + arc strokes
+  let waveRGB = "122, 162, 247"; // accent as "r, g, b" for rgba() fills
+  function readAccent() {
+    let h = getComputedStyle(document.documentElement)
+      .getPropertyValue("--accent")
+      .trim()
+      .replace("#", "");
+    if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+    if (h.length < 6) return;
+    const r = parseInt(h.slice(0, 2), 16);
+    const g = parseInt(h.slice(2, 4), 16);
+    const b = parseInt(h.slice(4, 6), 16);
+    if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return;
+    waveColor = "#" + h.slice(0, 6);
+    waveRGB = `${r}, ${g}, ${b}`;
+  }
+
   let search: SearchAddon;
   let searchOpen = $state(false);
   let searchQuery = $state("");
@@ -227,7 +252,165 @@
       // WebKitGTK without a usable WebGL context: DOM renderer is fine.
     }
 
-    const channel = subscribePane(pane, (chunk) => term.write(chunk));
+    // ── Thinking Waveform engine ──────────────────────────────────────
+    // Each frame folds the bytes seen since the last frame into one smoothed
+    // sample (fast attack, slow release) and pushes it into a fixed ~3s
+    // history stretched across the strip. That 3s window doubles as a linger:
+    // a TUI's spinner redrawing ~1–2×/s keeps the loop awake, so it reads as a
+    // continuous ripple, not a wake/sleep strobe. Once the window is genuinely
+    // flat the loop sleeps and clears — idle panes draw nothing, cost nothing.
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const HISTORY = 180; // samples ≈ 3s @ 60fps — the visible time window
+    const RELEASE = 0.84; // per-frame decay of the smoothed level
+    const SCALE = 600; // bytes/frame → ~full height (sqrt-compressed)
+    const history: number[] = []; // oldest→newest; newest drawn at the right edge
+    let bytesSinceFrame = 0;
+    let smoothed = 0;
+    let waveRaf = 0;
+    let waveRunning = false;
+    let arcAngle = 0; // Arc Reactor sweep rotation (persists across frames)
+
+    const levelFromBytes = (bytes: number) =>
+      bytes <= 0 ? 0 : Math.min(1, Math.sqrt(bytes / SCALE));
+    // Gamma < 1 lifts light activity (a spinner's trickle) so it still reads
+    // boldly, while heavy streaming still tops out near full.
+    const GAIN = 0.7;
+    const shape = (v: number) => Math.pow(v, GAIN);
+    const recentPeak = () => {
+      let p = 0;
+      for (let i = 0; i < history.length; i++) if (history[i] > p) p = history[i];
+      return p;
+    };
+    // Size each canvas to its CSS box (dpr-aware) and clear it. Returns null
+    // when it's hidden/zero-sized so the caller bails.
+    function prep(c: HTMLCanvasElement) {
+      const w = c.clientWidth,
+        h = c.clientHeight;
+      if (w <= 0 || h <= 0) return null;
+      const dpr = window.devicePixelRatio || 1;
+      const nw = Math.round(w * dpr),
+        nh = Math.round(h * dpr);
+      if (c.width !== nw || c.height !== nh) {
+        c.width = nw;
+        c.height = nh;
+      }
+      const ctx = c.getContext("2d");
+      if (!ctx) return null;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      return { ctx, w, h };
+    }
+
+    // Waveform — a mirrored oscilloscope of the last ~3s of activity.
+    function drawWave() {
+      const p = prep(waveCanvas);
+      if (!p) return;
+      const { ctx, w, h } = p;
+      const n = history.length;
+      if (n < 2) return;
+      const mid = h / 2;
+      const amp = mid - 2;
+      const step = w / (HISTORY - 1);
+      const x0 = w - (n - 1) * step; // right-align the newest sample
+      const yTop = (v: number) => mid - shape(v) * amp;
+      const yBot = (v: number) => mid + shape(v) * amp;
+      const peak = shape(recentPeak());
+
+      ctx.beginPath();
+      ctx.moveTo(x0, yTop(history[0]));
+      for (let i = 1; i < n; i++) ctx.lineTo(x0 + i * step, yTop(history[i]));
+      for (let i = n - 1; i >= 0; i--) ctx.lineTo(x0 + i * step, yBot(history[i]));
+      ctx.closePath();
+      const grad = ctx.createLinearGradient(0, 0, 0, h);
+      grad.addColorStop(0, `rgba(${waveRGB}, 0)`);
+      grad.addColorStop(0.5, `rgba(${waveRGB}, ${0.55 * peak})`);
+      grad.addColorStop(1, `rgba(${waveRGB}, 0)`);
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.moveTo(x0, yTop(history[0]));
+      for (let i = 1; i < n; i++) ctx.lineTo(x0 + i * step, yTop(history[i]));
+      ctx.strokeStyle = waveColor;
+      ctx.lineWidth = 1.5;
+      ctx.globalAlpha = 0.25 + 0.7 * peak;
+      ctx.shadowColor = waveColor;
+      ctx.shadowBlur = 8;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.shadowBlur = 0;
+    }
+
+    // Arc Reactor — a ring with a rotating sweep + core, Iron-Man HUD style.
+    function drawArc() {
+      const p = prep(arcCanvas);
+      if (!p) return;
+      const { ctx, w, h } = p;
+      const lvl = shape(smoothed);
+      const pk = shape(recentPeak());
+      const cx = w / 2,
+        cy = h / 2;
+      const R = Math.min(w, h) / 2 - 4;
+      arcAngle = (arcAngle + 0.04 + lvl * 0.5) % (Math.PI * 2); // spin ∝ throughput
+      ctx.lineWidth = 2 + pk * 2.5; // base ring
+      ctx.strokeStyle = `rgba(${waveRGB}, ${0.18 + 0.32 * pk})`;
+      ctx.beginPath();
+      ctx.arc(cx, cy, R, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = waveColor; // bright rotating sweep (~90°)
+      ctx.globalAlpha = 0.5 + 0.5 * pk;
+      ctx.shadowColor = waveColor;
+      ctx.shadowBlur = 4 + 8 * pk;
+      ctx.beginPath();
+      ctx.arc(cx, cy, R, arcAngle, arcAngle + Math.PI * 0.5);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
+      const cr = Math.max(0.2, 1.5 + lvl * (R - 3)); // core glow
+      const rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, cr);
+      rg.addColorStop(0, `rgba(${waveRGB}, ${0.6 + 0.4 * lvl})`);
+      rg.addColorStop(1, `rgba(${waveRGB}, 0)`);
+      ctx.fillStyle = rg;
+      ctx.beginPath();
+      ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function waveTick() {
+      waveRaf = 0;
+      const bytes = bytesSinceFrame;
+      bytesSinceFrame = 0;
+      smoothed = Math.max(levelFromBytes(bytes), smoothed * RELEASE);
+      if (smoothed < 0.004) smoothed = 0;
+      history.push(smoothed);
+      if (history.length > HISTORY) history.shift();
+      if (host.clientWidth >= 20 && host.clientHeight >= 20) {
+        drawWave();
+        drawArc();
+      }
+      // Keep animating until the last pulse has shifted out of the window.
+      if (smoothed > 0 || history.some((v) => v > 0.004)) {
+        waveRaf = requestAnimationFrame(waveTick);
+      } else {
+        waveRunning = false;
+        history.length = 0;
+        for (const c of [waveCanvas, arcCanvas])
+          c?.getContext("2d")?.clearRect(0, 0, c.width, c.height);
+      }
+    }
+
+    function waveWake() {
+      if (waveRunning || reduceMotion) return;
+      waveRunning = true;
+      waveRaf = requestAnimationFrame(waveTick);
+    }
+
+    readAccent();
+    const channel = subscribePane(pane, (chunk) => {
+      term.write(chunk);
+      bytesSinceFrame += chunk.length; // byte count only — never the content
+      waveWake();
+    });
     term.onData((data) => {
       clearKeyboardSelection();
       void writePane(pane, data);
@@ -272,6 +455,7 @@
     return () => {
       unregisterFocus();
       observer.disconnect();
+      cancelAnimationFrame(waveRaf);
       channel.onmessage = () => {};
       term.dispose();
     };
@@ -294,6 +478,13 @@
   $effect(() => {
     const theme = themeById(settings.theme).term;
     if (term) term.options.theme = theme;
+  });
+
+  // Thinking Waveform crest follows the active theme; re-read after the next
+  // frame so the theme's CSS vars are already applied to :root.
+  $effect(() => {
+    void settings.theme;
+    requestAnimationFrame(readAccent);
   });
 
   async function copySelection() {
@@ -367,6 +558,11 @@
   }}
 ></div>
 
+<div class="wave-lab" aria-hidden="true">
+  <canvas class="wl wave" bind:this={waveCanvas}></canvas>
+  <canvas class="wl arc" bind:this={arcCanvas}></canvas>
+</div>
+
 {#if searchOpen}
   <div class="search-bar">
     <!-- svelte-ignore a11y_autofocus -->
@@ -414,6 +610,36 @@
     width: 100%;
     height: 100%;
     background: var(--bg);
+  }
+  /* Activity widgets — the oscilloscope waveform (left) paired with the Arc
+     Reactor core (right), in the pane's top-right corner. Above the terminal,
+     below the hover toolbar/shockwave; never eat clicks. Both adapt in JS. */
+  .wave-lab {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    z-index: 4;
+    pointer-events: none;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+  }
+  .wl {
+    display: block;
+  }
+  .wl.wave {
+    width: 140px;
+    height: 46px;
+  }
+  .wl.arc {
+    width: 48px;
+    height: 46px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .wave-lab {
+      display: none;
+    }
   }
   .ctx-menu {
     position: fixed;
