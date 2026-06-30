@@ -1,6 +1,8 @@
-# v* 태그를 푸시하면 GitHub 서버에서 .deb를 빌드해 릴리스에 첨부한다.
+# v* 태그를 푸시하면 GitHub 서버에서 리눅스 .deb와 윈도우 .exe(NSIS) 설치본을
+# 빌드해 같은 릴리스에 첨부한다.
 # 사용법:  git tag v0.2.0 && git push origin v0.2.0
-# (ubuntu-22.04에서 빌드 — 22.04/24.04 양쪽에서 동작하는 glibc 하한 확보)
+# (리눅스: ubuntu-22.04 — 22.04/24.04 양쪽에서 동작하는 glibc 하한 확보 /
+#  윈도우: windows-latest — WebView2 런타임이 러너에 기본 포함)
 name: release
 
 on:
@@ -39,3 +41,28 @@ jobs:
             target/release/bundle/deb/*.deb --generate-notes \
           || gh release upload "${{ github.ref_name }}" \
             target/release/bundle/deb/*.deb --clobber
+
+  # 윈도우: 같은 태그로 windows-latest 러너에서 NSIS 설치본(.exe)을 빌드해
+  # build-deb가 만든 같은 릴리스에 첨부한다. needs로 릴리스 존재를 보장한다.
+  build-windows:
+    needs: build-deb
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+
+      - run: bun install
+      - run: cargo build --release -p amux-cli # amux.exe — PATH에 둘 CLI
+      - run: bunx tauri build # tauri.windows.conf.json → NSIS 설치본(.exe)
+
+      - name: 릴리스에 윈도우 산출물 첨부 (설치본 + amux.exe)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            target/release/bundle/nsis/*-setup.exe \
+            target/release/amux.exe --clobber

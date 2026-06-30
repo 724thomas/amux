@@ -3,7 +3,7 @@ name = "amux-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "CLI for controlling amux over its Unix socket"
+description = "CLI for controlling amux over its local socket (Unix socket / Windows named pipe)"
 
 [[bin]]
 name = "amux"
@@ -14,3 +14,5 @@ amux-protocol = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
+# Cross-platform local IPC (sync): Unix domain socket on Unix, named pipe on Windows.
+interprocess = "2"
