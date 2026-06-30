@@ -19,3 +19,5 @@ indexmap = { workspace = true }
 portable-pty = "0.9.0"
 alacritty_terminal = "0.26.0"
 notify-rust = "4.17.0"
+# Cross-platform local IPC: Unix domain socket on Unix, named pipe on Windows.
+interprocess = { version = "2", features = ["tokio"] }

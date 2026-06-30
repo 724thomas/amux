@@ -1,42 +1,71 @@
-//! NDJSON JSON-RPC 2.0 server over a Unix domain socket.
+//! NDJSON JSON-RPC 2.0 server over a local socket — a Unix domain socket on
+//! Unix, a named pipe on Windows, abstracted by `interprocess`.
 //!
-//! One request per line, one response per line — trivially debuggable with
-//! `socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/amux/amux.sock`. The server calls
-//! the same `Engine` methods as the UI, so anything the UI can do, an agent
-//! can script.
+//! One request per line, one response per line. On Unix it stays trivially
+//! debuggable with `socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/amux/amux.sock`. The
+//! server calls the same `Engine` methods as the UI, so anything the UI can
+//! do, an agent can script.
 
-use std::os::unix::fs::DirBuilderExt;
 use std::sync::Arc;
 
 use amux_protocol::{
     methods::*, rpc_codes, PaneId, RpcRequest, RpcResponse, WorkspaceId,
 };
+use interprocess::local_socket::{
+    tokio::{prelude::*, Stream},
+    ListenerOptions, Name,
+};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
 
 use crate::engine::{Engine, EngineError};
 
+/// Map our canonical socket string to the platform's `interprocess` name:
+/// a filesystem path on Unix, a namespaced pipe name on Windows.
+fn local_name(s: &str) -> std::io::Result<Name<'_>> {
+    #[cfg(windows)]
+    {
+        use interprocess::local_socket::{GenericNamespaced, ToNsName};
+        s.to_ns_name::<GenericNamespaced>()
+    }
+    #[cfg(not(windows))]
+    {
+        use interprocess::local_socket::{GenericFilePath, ToFsName};
+        s.to_fs_name::<GenericFilePath>()
+    }
+}
+
 pub async fn run(engine: Arc<Engine>) -> anyhow::Result<()> {
-    let path = amux_protocol::default_socket_path();
-    let dir = path.parent().expect("socket path has a parent");
-    if !dir.exists() {
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
-    }
+    let name_str = amux_protocol::default_socket_name();
 
-    if path.exists() {
-        // Live socket → another instance owns it; stale → clean up and bind.
-        if UnixStream::connect(&path).await.is_ok() {
-            anyhow::bail!("another amux instance is already serving {}", path.display());
+    // On Unix the name is a filesystem path: ensure the parent dir exists
+    // (0700) and clear a stale socket left by a crashed instance. On Windows
+    // the name is a pipe — there is no file to prepare or clean up.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let path = std::path::Path::new(&name_str);
+        if let Some(dir) = path.parent() {
+            if !dir.exists() {
+                std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+            }
         }
-        std::fs::remove_file(&path)?;
+        if path.exists() {
+            // Live socket → another instance owns it; stale → clean up and bind.
+            if Stream::connect(local_name(&name_str)?).await.is_ok() {
+                anyhow::bail!("another amux instance is already serving {name_str}");
+            }
+            std::fs::remove_file(path)?;
+        }
     }
 
-    let listener = UnixListener::bind(&path)?;
-    tracing::info!("socket server listening at {}", path.display());
+    let listener = ListenerOptions::new()
+        .name(local_name(&name_str)?)
+        .create_tokio()?;
+    tracing::info!("socket server listening at {name_str}");
 
     loop {
-        let (stream, _) = listener.accept().await?;
+        let stream = listener.accept().await?;
         let engine = Arc::clone(&engine);
         tokio::spawn(async move {
             if let Err(e) = serve_connection(stream, engine).await {
@@ -46,8 +75,8 @@ pub async fn run(engine: Arc<Engine>) -> anyhow::Result<()> {
     }
 }
 
-async fn serve_connection(stream: UnixStream, engine: Arc<Engine>) -> anyhow::Result<()> {
-    let (read, mut write) = stream.into_split();
+async fn serve_connection(stream: Stream, engine: Arc<Engine>) -> anyhow::Result<()> {
+    let (read, mut write) = tokio::io::split(stream);
     let mut lines = BufReader::new(read).lines();
     while let Some(line) = lines.next_line().await? {
         if line.trim().is_empty() {
@@ -234,5 +263,63 @@ fn dispatch(
         }
 
         other => Err(RpcDispatchError::MethodNotFound(other.into())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{BufRead, BufReader, Write};
+
+    /// End-to-end transport check: start the server, then connect a *sync*
+    /// client over `interprocess` (the same path the `amux` CLI uses) and run
+    /// one `version` request. Proves the local-socket round-trip works at
+    /// runtime — the transport is identical on Windows (named pipe), so a green
+    /// run here is strong evidence the Windows IPC works too.
+    #[tokio::test]
+    async fn ipc_round_trip() {
+        use interprocess::local_socket::{prelude::*, Stream};
+
+        // Platform-appropriate unique name: a temp file path on Unix, a bare
+        // pipe name on Windows (named pipes have no filesystem path). The
+        // client uses the same `local_name` mapping as the server, so they
+        // agree by construction — this exercises the real transport on both.
+        #[cfg(windows)]
+        let sock = format!("amux-ipctest-{}.sock", std::process::id());
+        #[cfg(not(windows))]
+        let sock = std::env::temp_dir()
+            .join(format!("amux-ipctest-{}.sock", std::process::id()))
+            .to_string_lossy()
+            .into_owned();
+        std::env::set_var(amux_protocol::env_keys::SOCKET, &sock);
+
+        let engine = crate::engine::Engine::new();
+        tokio::spawn(super::run(engine));
+
+        let name = sock.clone();
+        let response = tokio::task::spawn_blocking(move || {
+            // Retry until the server has bound the socket.
+            for _ in 0..50 {
+                if let Ok(mut stream) = Stream::connect(super::local_name(&name).unwrap()) {
+                    stream
+                        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"version\"}\n")
+                        .unwrap();
+                    let mut line = String::new();
+                    BufReader::new(&stream).read_line(&mut line).unwrap();
+                    return line;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            panic!("could not connect to the test server");
+        })
+        .await
+        .unwrap();
+
+        std::env::remove_var(amux_protocol::env_keys::SOCKET);
+        let _ = std::fs::remove_file(&sock);
+
+        assert!(
+            response.contains("\"result\"") && response.contains("version"),
+            "unexpected response: {response}"
+        );
     }
 }

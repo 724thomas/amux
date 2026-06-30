@@ -102,20 +102,34 @@ impl Pane {
             pixel_height: 0,
         })?;
 
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
-        let mut cmd = CommandBuilder::new(&shell);
-        cmd.arg("-l");
+        // Default shell per OS.
+        #[cfg(not(windows))]
+        let mut cmd = {
+            // Honour $SHELL and start a login shell so the user's profile
+            // (PATH, aliases) is loaded, exactly as a real terminal would.
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
+            let mut cmd = CommandBuilder::new(&shell);
+            cmd.arg("-l");
+            cmd
+        };
+        #[cfg(windows)]
+        let mut cmd = {
+            // Windows has no $SHELL. PowerShell ships with every Windows 10/11
+            // and CreateProcess resolves it via PATH. `AMUX_SHELL` overrides it
+            // (e.g. set it to `pwsh.exe` for PowerShell 7, or `cmd.exe`).
+            let shell = std::env::var("AMUX_SHELL").unwrap_or_else(|_| "powershell.exe".into());
+            CommandBuilder::new(shell)
+        };
+
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env(env_keys::PANE_ID, id.to_string());
         cmd.env(env_keys::WORKSPACE_ID, workspace.to_string());
-        cmd.env(
-            env_keys::SOCKET,
-            amux_protocol::default_socket_path().as_os_str(),
-        );
+        cmd.env(env_keys::SOCKET, amux_protocol::default_socket_name());
         let cwd = cwd
             .or_else(|| std::env::var_os("HOME").map(Into::into))
-            .unwrap_or_else(|| "/".into());
+            .or_else(|| std::env::var_os("USERPROFILE").map(Into::into))
+            .unwrap_or_else(|| ".".into());
         cmd.cwd(cwd);
 
         let mut child = pty.slave.spawn_command(cmd)?;

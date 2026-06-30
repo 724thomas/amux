@@ -211,23 +211,48 @@ pub mod rpc_codes {
     pub const PANE_EXITED: i64 = -32001;
 }
 
-/// Default socket path: `$XDG_RUNTIME_DIR/amux/amux.sock`,
-/// falling back to `/tmp/amux-$UID/amux.sock`.
-/// `$AMUX_SOCKET` (set inside panes) overrides both.
-pub fn default_socket_path() -> std::path::PathBuf {
+/// Canonical local-socket name both the app (server) and the `amux` CLI
+/// (client) feed to the `interprocess` crate, which maps it to the right
+/// OS primitive:
+/// - **Unix**: a filesystem path — `$XDG_RUNTIME_DIR/amux/amux.sock`, falling
+///   back to `/tmp/amux-$UID/amux.sock` — opened as a Unix domain socket.
+/// - **Windows**: a short name — `amux-<user>.sock` — mapped to the named pipe
+///   `\\.\pipe\amux-<user>.sock` (there is no filesystem path on Windows).
+///
+/// `$AMUX_SOCKET` (injected into every pane) overrides the default, so the
+/// in-pane CLI always reaches the app instance that spawned it.
+pub fn default_socket_name() -> String {
     if let Some(explicit) = std::env::var_os(env_keys::SOCKET) {
-        return std::path::PathBuf::from(explicit);
+        return explicit.to_string_lossy().into_owned();
     }
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(|d| std::path::PathBuf::from(d).join("amux"))
-        .unwrap_or_else(|| {
-            let uid = unsafe { libc_geteuid() };
-            std::path::PathBuf::from(format!("/tmp/amux-{uid}"))
-        });
-    dir.join("amux.sock")
+
+    #[cfg(windows)]
+    {
+        // Named pipes are machine-global, so scope the name to the user to
+        // avoid colliding with another account's amux on the same box.
+        let user = std::env::var("USERNAME").unwrap_or_else(|_| "user".into());
+        let user: String = user
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        format!("amux-{user}.sock")
+    }
+
+    #[cfg(not(windows))]
+    {
+        let dir = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(|d| std::path::PathBuf::from(d).join("amux"))
+            .unwrap_or_else(|| {
+                let uid = unsafe { libc_geteuid() };
+                std::path::PathBuf::from(format!("/tmp/amux-{uid}"))
+            });
+        dir.join("amux.sock").to_string_lossy().into_owned()
+    }
 }
 
-// Avoid a libc dependency for one call: geteuid via extern.
+// Avoid a libc dependency for one call: geteuid via extern. Unix-only — there
+// is no such symbol on Windows (which uses a named pipe, not a /tmp path).
+#[cfg(not(windows))]
 extern "C" {
     #[link_name = "geteuid"]
     fn libc_geteuid() -> u32;

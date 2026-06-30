@@ -1,26 +1,27 @@
-//! `amux` — control a running amux app over its Unix socket.
+//! `amux` — control a running amux app over its local socket
+//! (Unix domain socket on Unix, named pipe on Windows).
 //!
 //! Inside a pane, `$AMUX_PANE_ID` / `$AMUX_SOCKET` are preset, so commands
 //! like `amux read-screen` or `amux notify` need no arguments — which is
 //! exactly what agent hooks want.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
 
 use anyhow::{bail, Context};
 use clap::{Parser, Subcommand};
+use interprocess::local_socket::{prelude::*, Name, Stream};
 use serde_json::{json, Value};
 
 #[derive(Parser)]
 #[command(
     name = "amux",
     version,
-    about = "Control a running amux app (panes, workspaces, notifications) over its Unix socket"
+    about = "Control a running amux app (panes, workspaces, notifications) over its local socket"
 )]
 struct Cli {
-    /// Socket path (defaults to $AMUX_SOCKET, then $XDG_RUNTIME_DIR/amux/amux.sock)
+    /// Socket name/path (defaults to $AMUX_SOCKET, then the per-user default)
     #[arg(long, global = true)]
-    socket: Option<std::path::PathBuf>,
+    socket: Option<String>,
 
     /// Print raw JSON responses instead of human-readable tables
     #[arg(long, global = true)]
@@ -96,17 +97,29 @@ enum WsCommand {
 }
 
 struct Client {
-    stream: UnixStream,
+    stream: Stream,
     next_id: u64,
 }
 
+/// Map our canonical socket string to the platform's `interprocess` name:
+/// a filesystem path on Unix, a namespaced pipe name on Windows.
+fn local_name(s: &str) -> std::io::Result<Name<'_>> {
+    #[cfg(windows)]
+    {
+        use interprocess::local_socket::{GenericNamespaced, ToNsName};
+        s.to_ns_name::<GenericNamespaced>()
+    }
+    #[cfg(not(windows))]
+    {
+        use interprocess::local_socket::{GenericFilePath, ToFsName};
+        s.to_fs_name::<GenericFilePath>()
+    }
+}
+
 impl Client {
-    fn connect(path: &std::path::Path) -> anyhow::Result<Self> {
-        let stream = UnixStream::connect(path).with_context(|| {
-            format!(
-                "amux 앱에 연결할 수 없습니다 ({}). 앱이 실행 중인지 확인하세요.",
-                path.display()
-            )
+    fn connect(name: &str) -> anyhow::Result<Self> {
+        let stream = Stream::connect(local_name(name)?).with_context(|| {
+            format!("amux 앱에 연결할 수 없습니다 ({name}). 앱이 실행 중인지 확인하세요.")
         })?;
         Ok(Self { stream, next_id: 1 })
     }
@@ -149,8 +162,18 @@ fn pane_or_env(pane: Option<String>) -> anyhow::Result<String> {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let socket = cli.socket.unwrap_or_else(amux_protocol::default_socket_path);
-    let mut client = Client::connect(&socket)?;
+    let socket = cli.socket.unwrap_or_else(amux_protocol::default_socket_name);
+
+    // `amux notify` is a fire-and-forget agent hook: outside an amux pane (or
+    // when the app isn't running) it must do nothing and exit 0 so it never
+    // breaks the calling session. This keeps the hook commands identical on
+    // every OS and shell — no `2>/dev/null || true` wrapping needed.
+    let lenient = matches!(cli.command, Command::Notify { .. });
+    let mut client = match Client::connect(&socket) {
+        Ok(client) => client,
+        Err(_) if lenient => return Ok(()),
+        Err(e) => return Err(e),
+    };
 
     let result = match cli.command {
         Command::Ls => {
@@ -246,10 +269,12 @@ fn main() -> anyhow::Result<()> {
             } else {
                 (title, body)
             };
-            client.call(
+            // Fire-and-forget: ignore errors so an agent hook never fails.
+            let _ = client.call(
                 "notify.set",
                 json!({ "pane": pane, "kind": kind, "title": title, "body": body }),
-            )?
+            );
+            return Ok(());
         }
     };
 
