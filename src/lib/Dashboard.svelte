@@ -64,7 +64,7 @@
     min-height: 0;
     background: transparent;
     color: var(--text);
-    font-family: ui-monospace, "SF Mono", monospace;
+    font-family: "Cascadia Mono", "Consolas", ui-monospace, "SF Mono", monospace;
   }
 
   /* ── Header ── */

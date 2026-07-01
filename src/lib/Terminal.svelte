@@ -134,7 +134,7 @@
     term = new Terminal({
       allowProposedApi: true,
       scrollback: 10_000,
-      fontFamily: "monospace",
+      fontFamily: '"Cascadia Mono", "Consolas", Menlo, monospace',
       fontSize: settings.fontSize,
       theme: themeById(settings.theme).term,
     });

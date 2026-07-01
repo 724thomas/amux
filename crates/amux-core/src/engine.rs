@@ -620,10 +620,7 @@ impl Engine {
         let activity = *pane.activity.lock();
         let silent_for = activity.last_output.elapsed();
         let burst_len = activity.last_output.duration_since(activity.burst_start);
-        let app_running = {
-            let fg = pane.shell_pid();
-            fg.is_some() && fg != pane.child_pid()
-        };
+        let app_running = pane.app_running();
 
         let hook_managed = pane.hook_managed.load(Ordering::SeqCst);
         let mut status = pane.status.lock();

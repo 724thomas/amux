@@ -280,8 +280,20 @@ impl Pane {
     }
 
     /// PID of the foreground process group leader (what runs in the pane now).
+    ///
+    /// Unix-only: `MasterPty::process_group_leader()` (tcgetpgrp under the hood)
+    /// is gated `#[cfg(unix)]` in portable-pty and simply does not exist on
+    /// Windows, so we report `None` there. The metadata sweeper then degrades
+    /// gracefully — cwd/git/ports come back empty — exactly as documented.
     pub fn shell_pid(&self) -> Option<u32> {
-        self.master.lock().process_group_leader().map(|p| p as u32)
+        #[cfg(unix)]
+        {
+            self.master.lock().process_group_leader().map(|p| p as u32)
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
     }
 
     /// Root PID of the shell process spawned at pane creation.
@@ -289,8 +301,65 @@ impl Pane {
         self.child_pid
     }
 
+    /// Whether a foreground command/app (not just the shell) is running in the
+    /// pane right now — the signal the status state machine uses to tell
+    /// "running a command" from "sitting idle at the prompt".
+    ///
+    /// Unix: the foreground process group differs from the shell.
+    /// Windows: ConPTY has no foreground process group, so we approximate with
+    /// "the pane's shell has a live child process" — external commands (claude,
+    /// node, npm, git, ...) run as children of `powershell.exe`. Pure in-process
+    /// PowerShell cmdlet work (e.g. `Start-Sleep`, `1..9 | %{...}`) spawns no
+    /// child and won't register, which is acceptable: amux runs external agents.
+    pub fn app_running(&self) -> bool {
+        #[cfg(unix)]
+        {
+            let fg = self.shell_pid();
+            fg.is_some() && fg != self.child_pid()
+        }
+        #[cfg(windows)]
+        {
+            self.child_pid().is_some_and(has_live_child)
+        }
+    }
+
     pub fn kill(&self) {
         let _ = self.killer.lock().kill();
+    }
+}
+
+/// Does any running process have `parent_pid` as its parent? Windows-only probe
+/// backing `Pane::app_running` (the "a command is running in the pane" signal,
+/// since ConPTY exposes no foreground process group).
+#[cfg(windows)]
+fn has_live_child(parent_pid: u32) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return false;
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut found = false;
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                if entry.th32ParentProcessID == parent_pid {
+                    found = true;
+                    break;
+                }
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+        found
     }
 }
 
@@ -314,7 +383,21 @@ mod tests {
         )
         .expect("spawn pane");
 
-        pane.write(b"echo amux-$((40+2))\n").expect("write");
+        // Stand in for the frontend terminal: ConPTY emits a cursor-position
+        // query (`ESC[6n`) at startup and won't pump the shell's output until
+        // it is answered. xterm.js does this in the real app; headless we must.
+        // Answer every occurrence — PSReadLine re-queries the position on redraw.
+        let responder = pane.clone();
+        pane.set_sink(Box::new(move |chunk| {
+            const DSR: &[u8] = b"\x1b[6n";
+            for w in chunk.windows(DSR.len()) {
+                if w == DSR {
+                    let _ = responder.write(b"\x1b[1;1R");
+                }
+            }
+        }));
+
+        pane.write(b"echo amux-$((40+2))\r").expect("write");
 
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -322,7 +405,15 @@ mod tests {
             if screen.contains("amux-42") {
                 break;
             }
-            assert!(Instant::now() < deadline, "screen never showed output:\n{screen}");
+            if Instant::now() >= deadline {
+                let tail = pane.tail.lock();
+                panic!(
+                    "screen never showed 'amux-42'.\n--- read_screen() ({} chars) ---\n{screen}\n--- raw tail ({} bytes) ---\n{}\n--- end ---",
+                    screen.len(),
+                    tail.len(),
+                    String::from_utf8_lossy(&tail),
+                );
+            }
             std::thread::sleep(Duration::from_millis(100));
         }
 
@@ -343,8 +434,28 @@ mod tests {
             |_| {},
         )
         .expect("spawn pane");
-        pane.write(b"echo replay-me\n").expect("write");
-        std::thread::sleep(Duration::from_millis(1500));
+        // Answer ConPTY's startup cursor-position query (`ESC[6n`) so the shell
+        // runs and produces output; no-op on Unix. See echo_round_trip.
+        let responder = pane.clone();
+        pane.set_sink(Box::new(move |chunk| {
+            const DSR: &[u8] = b"\x1b[6n";
+            for w in chunk.windows(DSR.len()) {
+                if w == DSR {
+                    let _ = responder.write(b"\x1b[1;1R");
+                }
+            }
+        }));
+        pane.write(b"echo replay-me\r").expect("write");
+
+        // Wait until the shell has actually produced the output into the tail,
+        // then attach a *late* collector that must receive it via tail replay.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if String::from_utf8_lossy(pane.tail.lock().as_slice()).contains("replay-me") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
 
         let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
         pane.set_sink(Box::new(move |chunk| {
