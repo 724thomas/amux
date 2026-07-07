@@ -40,11 +40,10 @@ pub fn run() {
         ])
         .setup(move |app| {
             engine.start_meta_sweeper();
-            // Initial workspace lives engine-side so webview reloads can't
-            // race a duplicate into existence. The first resize fixes 80x24.
-            if let Err(e) = engine.create_workspace(None, None, 80, 24) {
-                tracing::error!("initial workspace: {e}");
-            }
+            // Launch with zero workspaces — the user opens the first one via
+            // "+ 새 워크스페이스" (which prompts for a title). We intentionally
+            // do NOT auto-create a workspace here; the frontend renders an empty
+            // main area and the sidebar's add button is the entry point.
             // Automation socket: same engine the UI uses.
             tauri::async_runtime::spawn({
                 let engine = Arc::clone(&engine);

@@ -112,6 +112,12 @@ export const broadcast = $state<{ on: boolean }>({ on: false });
 // Command Palette (Ctrl+Shift+P) open/closed. Transient.
 export const palette = $state<{ open: boolean }>({ open: false });
 
+// New-workspace title prompt: creating a workspace (via the sidebar "+" button
+// or Ctrl+Shift+T) always opens an inline title input first — no workspace is
+// created until the user confirms. Shared so both entry points drive the one
+// input the Sidebar renders. Transient.
+export const wsCreate = $state<{ open: boolean }>({ open: false });
+
 // --- Dashboard (Mission Control) -------------------------------------------
 // A JARVIS-style full-screen overlay (Ctrl+Shift+A) showing every live agent
 // across all workspaces at a glance. Transient.

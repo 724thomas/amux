@@ -19,8 +19,8 @@
     type WorkspaceId,
     type WorkspaceInfo,
   } from "./ipc";
-  import { app, attentionItems, clock, focusTerm, paneInfo } from "./state.svelte";
-  import { adjustFontSize, setNotifHeight, setTheme, settings } from "./settings.svelte";
+  import { app, attentionItems, clock, focusTerm, paneInfo, wsCreate } from "./state.svelte";
+  import { adjustFontSize, setNotifHeight, setTheme, settings, toggleShowLastInput } from "./settings.svelte";
   import { THEMES, themeById } from "./themes";
 
   const snapshot = $derived(app.snapshot);
@@ -46,6 +46,32 @@
   let renaming = $state<{ kind: "workspace" | "pane"; id: string } | null>(null);
   let renameValue = $state("");
   let draggedId = $state<WorkspaceId | null>(null);
+
+  // New-workspace title prompt (opened by the "+" button or Ctrl+Shift+T via the
+  // shared wsCreate flag). The inline input below always appears before any
+  // workspace is created; a blank name falls back to the engine's auto-name.
+  let newWsName = $state("");
+  let newWsInput = $state<HTMLInputElement | null>(null);
+  // A plain `autofocus` attribute doesn't fire on a dynamically-mounted input in
+  // this webview (Palette hits the same issue), so focus it explicitly once the
+  // prompt opens — works whether opened by mouse ("+") or keyboard (Ctrl+Shift+T).
+  $effect(() => {
+    if (wsCreate.open) newWsInput?.focus();
+  });
+  function startCreateWorkspace() {
+    newWsName = "";
+    wsCreate.open = true;
+  }
+  function commitCreateWorkspace() {
+    const name = newWsName.trim();
+    wsCreate.open = false;
+    newWsName = "";
+    void createWorkspace(name || undefined);
+  }
+  function cancelCreateWorkspace() {
+    wsCreate.open = false;
+    newWsName = "";
+  }
 
   function layoutPanes(node: LayoutNode): PaneId[] {
     return node.type === "leaf"
@@ -224,7 +250,23 @@
       </li>
     {/each}
   </ul>
-  <button class="add" onclick={() => void createWorkspace()}>+ 새 워크스페이스</button>
+  {#if wsCreate.open}
+    <input
+      class="add-input"
+      bind:this={newWsInput}
+      placeholder="새 워크스페이스 이름 (Enter 생성 · Esc 취소)"
+      bind:value={newWsName}
+      onblur={cancelCreateWorkspace}
+      onkeydown={(e) => {
+        if (e.key === "Enter") commitCreateWorkspace();
+        else if (e.key === "Escape") cancelCreateWorkspace();
+        e.stopPropagation();
+      }}
+      onclick={(e) => e.stopPropagation()}
+    />
+  {:else}
+    <button class="add" onclick={startCreateWorkspace}>+ 새 워크스페이스</button>
+  {/if}
 
   <!-- 하단 패널 높이 조절 핸들 (위로 드래그하면 패널이 커지고 워크스페이스 영역이 줄어듦) -->
   <div
@@ -309,6 +351,22 @@
     <button onclick={() => adjustFontSize(-1)}>−</button>
     <span class="font-size">{settings.fontSize}px</span>
     <button onclick={() => adjustFontSize(1)}>＋</button>
+  </div>
+
+  <!-- 직전 명령 표시 토글 (폰트 바로 아래) — 각 pane 안에 마지막으로 보낸
+       명령을 최대 4줄로, 드래그 가능한 칩으로 표시. -->
+  <div class="toggle-control" title="각 pane 안에 직전에 보낸 명령을 최대 4줄로 표시 (칩은 드래그로 위치 이동)">
+    <span class="font-label">직전 명령 표시</span>
+    <button
+      class="switch"
+      class:on={settings.showLastInput}
+      role="switch"
+      aria-checked={settings.showLastInput}
+      aria-label="직전 명령 표시 토글"
+      onclick={toggleShowLastInput}
+    >
+      <span class="knob"></span>
+    </button>
   </div>
 </nav>
 
@@ -594,6 +652,19 @@
   .add:hover {
     background: var(--surface-4);
   }
+  .add-input {
+    margin: 8px;
+    padding: 7px;
+    font-size: 0.8rem;
+    color: var(--text);
+    background: var(--surface-3);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    outline: none;
+  }
+  .add-input::placeholder {
+    color: var(--muted);
+  }
   .theme-control {
     position: relative;
     display: flex;
@@ -677,9 +748,47 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 4px 10px 10px;
+    padding: 4px 10px 6px;
     font-size: 0.75rem;
     color: var(--muted);
+  }
+  .toggle-control {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px 10px;
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+  .switch {
+    position: relative;
+    flex-shrink: 0;
+    width: 34px;
+    height: 18px;
+    padding: 0;
+    background: var(--surface-3);
+    border: 1px solid var(--border-2);
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .switch.on {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .switch .knob {
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--text-2);
+    transition: transform 0.15s;
+  }
+  .switch.on .knob {
+    transform: translateX(16px);
+    background: var(--bg);
   }
   .font-label {
     margin-right: auto;
