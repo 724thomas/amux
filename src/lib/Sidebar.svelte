@@ -232,7 +232,13 @@
                     {pane?.name ?? "터미널"}
                     {#if pane}
                       <span class="status {pane.status}">
-                        {pane.status === "processing" ? "processing" + ".".repeat(dots) : pane.status}
+                        {#if pane.status === "processing"}
+                          {"processing" + ".".repeat(dots)}
+                        {:else if pane.status === "done"}
+                          DONE
+                        {:else}
+                          {pane.status}
+                        {/if}
                       </span>
                     {/if}
                     {#if pane?.notification}<span class="badge"></span>{/if}
@@ -605,6 +611,14 @@
   .status.waiting {
     color: var(--yellow);
     background: color-mix(in srgb, var(--yellow) 15%, transparent);
+  }
+  /* Pinned by the user, not derived like the other four — the outline says
+     "this one is held here on purpose". */
+  .status.done {
+    color: var(--done);
+    background: color-mix(in srgb, var(--done) 15%, transparent);
+    border: 1px solid color-mix(in srgb, var(--done) 45%, transparent);
+    padding: 0 5px;
   }
   .pane-detail {
     display: flex;

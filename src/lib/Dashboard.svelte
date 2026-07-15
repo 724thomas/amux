@@ -30,8 +30,9 @@
     <span class="agg">
       <span class="c proc"><i></i>{counts.processing} ACTIVE</span>
       <span class="c wait"><i></i>{counts.waiting} WAIT</span>
-      <span class="c done"><i></i>{counts.processed} DONE</span>
+      <span class="c ready"><i></i>{counts.processed} READY</span>
       <span class="c idle"><i></i>{counts.idle} IDLE</span>
+      <span class="c done"><i></i>{counts.done} DONE</span>
       <span class="c total">{counts.total} UNITS ONLINE</span>
     </span>
   </header>
@@ -148,11 +149,16 @@
   .agg .wait {
     color: var(--yellow);
   }
-  .agg .done {
+  /* `ready` = processed: finished but unseen. Distinct from `done`, which the
+     user pinned themselves after reviewing. */
+  .agg .ready {
     color: var(--green);
   }
   .agg .idle {
     color: var(--accent);
+  }
+  .agg .done {
+    color: var(--done);
   }
   .agg .total {
     color: var(--info);
@@ -197,6 +203,9 @@
   }
   .node[data-status="idle"] {
     --st: var(--accent);
+  }
+  .node[data-status="done"] {
+    --st: var(--done);
   }
   .node:hover {
     transform: translateY(-3px) scale(1.05);
@@ -248,11 +257,18 @@
   .node[data-status="waiting"] .ring::before {
     animation-duration: 2.4s;
   }
-  /* done = a near-complete bright ring, slow drift */
+  /* processed = a near-complete bright ring, slow drift */
   .node[data-status="processed"] .ring::before {
     background: conic-gradient(from 0deg, var(--st) 0 90%, transparent 100%);
     animation-duration: 7s;
     opacity: 0.7;
+  }
+  /* done = closed ring, frozen: the status is pinned, so nothing about it
+     should read as still moving. */
+  .node[data-status="done"] .ring::before {
+    background: var(--st);
+    animation: none;
+    opacity: 0.85;
   }
   .node[data-status="idle"] .ring::before {
     animation: none;

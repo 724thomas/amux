@@ -153,9 +153,19 @@ export function dashboardAgents(): AgentTile[] {
       cwd: p.meta.cwd ?? null,
     });
   }
-  // waiting → processed → processing → idle, then oldest-in-status first.
+  // waiting → processed → processing → idle → done, then oldest-in-status
+  // first. `done` is parked last: the user already pinned it as reviewed, so
+  // it is the one status that is never asking for attention.
   const rank = (s: string) =>
-    s === "waiting" ? 0 : s === "processed" ? 1 : s === "processing" ? 2 : 3;
+    s === "waiting"
+      ? 0
+      : s === "processed"
+        ? 1
+        : s === "processing"
+          ? 2
+          : s === "idle"
+            ? 3
+            : 4;
   out.sort((a, b) => rank(a.status) - rank(b.status) || a.since - b.since);
   return out;
 }
@@ -166,9 +176,10 @@ export function statusCounts(): {
   waiting: number;
   processed: number;
   idle: number;
+  done: number;
   total: number;
 } {
-  const c = { processing: 0, waiting: 0, processed: 0, idle: 0, total: 0 };
+  const c = { processing: 0, waiting: 0, processed: 0, idle: 0, done: 0, total: 0 };
   const snap = app.snapshot;
   if (!snap) return c;
   for (const p of snap.panes) {
@@ -178,6 +189,7 @@ export function statusCounts(): {
     else if (p.status === "waiting") c.waiting++;
     else if (p.status === "processed") c.processed++;
     else if (p.status === "idle") c.idle++;
+    else if (p.status === "done") c.done++;
   }
   return c;
 }

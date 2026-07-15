@@ -31,6 +31,7 @@ pub fn run() {
             commands::split_pane,
             commands::focus_pane,
             commands::rename_pane,
+            commands::set_pane_done,
             commands::move_pane,
             commands::clear_notification_history,
             commands::write_pane,

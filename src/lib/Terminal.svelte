@@ -299,6 +299,12 @@
         !e.ctrlKey &&
         !e.altKey
       ) {
+        // preventDefault가 없으면 브라우저가 이어서 keypress를 쏘고, xterm은
+        // 거기서 charCode 13을 그대로 PTY에 보낸다(`_keyPress` → `\r`). 우리가
+        // 보낸 줄바꿈 직후 Enter가 한 번 더 들어가 프롬프트가 제출돼 버리므로
+        // (핸들러가 false를 반환해도 xterm은 preventDefault를 대신 해주지 않음)
+        // keypress 자체를 막아야 한다.
+        e.preventDefault();
         void writePane(pane, kitty ? "\x1b[13;2u" : "\x1b\r");
         return false;
       }

@@ -19,7 +19,15 @@ export interface PaneNotification {
   body: string | null;
 }
 
-export type PaneStatus = "processing" | "processed" | "idle" | "waiting";
+/// `done` is the odd one out: the user pins it from the pane toolbar and no
+/// automatic writer (hooks, bell, silence heuristic, focus) may overwrite it.
+/// Being `done` IS the pin — there is no separate flag.
+export type PaneStatus =
+  | "processing"
+  | "processed"
+  | "idle"
+  | "waiting"
+  | "done";
 
 export interface PaneInfo {
   id: PaneId;
@@ -95,6 +103,10 @@ export const focusPane = (pane: PaneId) => invoke<void>("focus_pane", { pane });
 
 export const renamePane = (pane: PaneId, name: string) =>
   invoke<void>("rename_pane", { pane, name });
+
+/** Pin (`done = true`) or release the "finished, under review" status. */
+export const setPaneDone = (pane: PaneId, done: boolean) =>
+  invoke<void>("set_pane_done", { pane, done });
 
 export const movePane = (pane: PaneId, target: PaneId, axis: SplitAxis, before: boolean) =>
   invoke<void>("move_pane", { pane, target, axis, before });

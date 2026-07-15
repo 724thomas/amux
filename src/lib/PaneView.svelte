@@ -2,7 +2,15 @@
   // One terminal pane: click-to-focus, focus ring, hover toolbar,
   // pane actions in the terminal's context menu, drag-rearrange.
   import Terminal from "./Terminal.svelte";
-  import { closePane, focusPane, movePane, splitPane, type PaneId, type SplitAxis } from "./ipc";
+  import {
+    closePane,
+    focusPane,
+    movePane,
+    setPaneDone,
+    splitPane,
+    type PaneId,
+    type SplitAxis,
+  } from "./ipc";
   import { app, paneInfo, rings, broadcast } from "./state.svelte";
 
   let { pane, focused }: { pane: PaneId; focused: boolean } = $props();
@@ -19,6 +27,8 @@
   // one-shot radial burst to pull the eye to the agent that just shipped.
   // Bumping `burst` re-keys the effect element below, restarting the animation.
   const status = $derived(paneInfo(pane)?.status);
+  // `done` is a pinned status, so it doubles as the toggle's own on/off state.
+  const isDone = $derived(status === "done");
   let burst = $state(0);
   let prevStatus: string | undefined;
   $effect(() => {
@@ -102,6 +112,19 @@
     {/if}
   {/key}
   <div class="toolbar">
+    <button
+      class="done-toggle"
+      class:on={isDone}
+      role="switch"
+      aria-checked={isDone}
+      title={isDone
+        ? "DONE 고정 해제 — 상태 자동 갱신 재개"
+        : "DONE으로 고정 — 작업 완료, 검토 중"}
+      onmousedown={(e) => e.preventDefault()}
+      onclick={() => void setPaneDone(pane, !isDone)}
+    >
+      ✓
+    </button>
     <button
       class="drag-handle"
       title="드래그해서 위치 이동"
@@ -352,6 +375,15 @@
   }
   .toolbar .drag-handle {
     cursor: grab;
+  }
+  /* The only toolbar button with a latched state: filled while DONE is pinned,
+     so the toggle reads as on/off without opening the sidebar. */
+  .toolbar button.done-toggle.on {
+    background: var(--done);
+    color: var(--bg);
+  }
+  .toolbar button.done-toggle.on:hover {
+    background: color-mix(in srgb, var(--done) 78%, var(--bg));
   }
   .toolbar button.close:hover {
     background: var(--red);
