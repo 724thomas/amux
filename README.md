@@ -6,7 +6,7 @@ AI 코딩 에이전트(Claude Code 등)를 **병렬로** 돌리기 위한 Ubuntu
 
 
 - 워크스페이스(탭) × 분할 pane — 동시 다중 터미널, 개수 제한 없음
-- 에이전트 상태 칩: 🔴 processing / 🟢 processed / 🔵 idle / 🟡 waiting
+- 에이전트 상태 칩: 🔴 processing / 🟢 processed / 🔵 idle / 🟡 waiting, 그리고 직접 고정하는 🟣 DONE(검토 중)
 - 데스크톱 알림 (BEL, OSC 9/777, Claude Code hook) + 사이드바 **지금 봐야 할 에이전트** 우선순위 목록
 - 사이드바에 브랜치 · cwd · 리슨 포트(클릭하면 브라우저 오픈) 표시
 - **직전 명령 칩** — 각 pane에 마지막으로 보낸 명령을 최대 4줄로 고정 표시 (드래그로 위치 이동 · 터미널 폰트에 연동 · 설정 토글)
@@ -18,6 +18,13 @@ AI 코딩 에이전트(Claude Code 등)를 **병렬로** 돌리기 위한 Ubuntu
 스택: Tauri 2 (Rust) + Svelte 5 + xterm.js.
 
 ## 변경 내역
+
+### 미출시
+- **🟣 DONE 상태 + pane 툴바 ✓ 버튼** — 작업이 끝나 검토 중인 pane을 직접 고정.
+  자동 판정되는 나머지 네 상태와 달리 hook·벨·포커스·휴리스틱이 건드리지 못한다
+- **Shift+Enter 줄바꿈 수정** — 줄바꿈 대신 프롬프트가 제출되던 버그. 핸들러는
+  있었지만 `preventDefault`가 없어 브라우저가 keypress를 한 번 더 쏘고, xterm이
+  거기서 Enter를 그대로 PTY에 보내고 있었다 (Alt+Enter는 xterm 자체 경로라 무사)
 
 ### v0.4.0
 - **🛰 Mission Control 대시보드 (Ctrl+Shift+A)** — 전 워크스페이스의 에이전트를 JARVIS HUD 모달로 한눈에, 노드 클릭 시 그 pane으로 점프
@@ -131,9 +138,18 @@ amux는 **워크스페이스 없이 빈 상태로 시작**합니다 — `+ 새 �
 | 🟢 processed | 작업 완료, 아직 안 봄 |
 | 🔵 idle | 한가함 (완료 확인됨) |
 | 🟡 waiting | 입력 대기 (예: Claude 권한 질문) |
+| 🟣 DONE | 작업이 끝나 **검토 중** — 사용자가 직접 고정 |
 
-Claude Code는 hook 연동 시 정확하게 동작하고(아래 참고), 일반 명령은
-출력 휴리스틱으로 자동 판정됩니다.
+앞의 네 개는 amux가 자동으로 판정합니다. Claude Code는 hook 연동 시
+정확하게 동작하고(아래 참고), 일반 명령은 출력 휴리스틱으로 판정됩니다.
+
+**🟣 DONE만 예외로, 직접 고정하는 상태입니다.** pane에 마우스를 올리면 뜨는
+툴바의 맨 왼쪽 **✓** 버튼을 누르면 그 pane이 DONE으로 고정됩니다. 고정된
+동안에는 hook·벨·포커스·휴리스틱 무엇도 상태를 바꾸지 못하므로, 에이전트가
+계속 뭔가를 출력해도 "검토 중" 표시가 유지됩니다. ✓를 다시 누르면 고정이
+풀리고 idle로 돌아가면서 자동 판정이 재개됩니다.
+
+> 상태는 저장되지 않습니다 — amux를 재시작하면 DONE 고정도 함께 사라집니다.
 
 <img width="1846" height="1072" alt="image" src="https://github.com/user-attachments/assets/1812209b-cf5c-43de-ac5a-8a1f8b88f7c5" />
 
