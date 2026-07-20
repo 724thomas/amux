@@ -111,11 +111,17 @@ bun run tauri dev
 ```
 
 - 처음엔 Rust 의존성 컴파일로 몇 분 걸립니다.
-- 성공하면 amux 창이 뜨고, 워크스페이스 하나에 PowerShell pane이 열립니다.
-- pane에서 명령을 쳐보고(예: `dir`), 분할(상단 중앙 툴바 ◫/⬓)과 워크스페이스 추가가
+- 성공하면 amux 창이 뜹니다. **지금은 실행하자마자 워크스페이스가 열리지
+  않습니다("빈 시작"으로 바뀌었음).** 왼쪽 사이드바의 **`+ 새 워크스페이스`** 버튼을
+  누르고 제목을 입력한 뒤 Enter를 치면, 그때 PowerShell pane 하나가 열립니다.
+  (예전 문서는 실행 즉시 pane이 열린다고 안내했는데, 지금은 사용자가 첫 워크스페이스를
+  직접 만드는 방식입니다.)
+- 워크스페이스가 열리면 pane에서 명령을 쳐보고(예: `dir`), 분할(상단 중앙 툴바 ◫/⬓)이
   되는지 확인하세요.
 
-빈 창만 뜨면 → WebView2 누락(§1-4). 링커 에러(`link.exe` not found)면 → MSVC 누락(§1-1).
+**빈-창 진단 주의:** 사이드바와 `+ 새 워크스페이스` 버튼까지 다 안 보이고 **새하얀 창**만
+뜨면 → WebView2 누락(§1-4). 반면 **사이드바는 떴는데 가운데만 비어 있는 것은 정상**입니다
+(위의 `+ 새 워크스페이스`로 시작하세요). 링커 에러(`link.exe` not found)면 → MSVC 누락(§1-1).
 
 ---
 
@@ -196,8 +202,11 @@ python scripts\install-claude-hooks.py
 ## 8. 검증됨 vs 미검증 — 컴파일이 막히면 여기를 보세요
 
 리눅스에서 **빌드·테스트가 모두 통과**했고, 양쪽 OS가 공유하는 코드(IPC 전송, 프로토콜,
-PTY, UI)는 그래서 신뢰도가 높습니다. 다만 아래 **cfg(windows) 분기**는 리눅스에서는
-컴파일되지 않는 부분이라 윈도우 컴파일러로만 확인됩니다. 에러가 나면 십중팔구 여기입니다.
+PTY, UI)는 그래서 신뢰도가 높습니다. 아래 **cfg(windows) 분기**는 리눅스 *네이티브* 빌드엔
+안 들어가지만, 이제 **`cargo check --target x86_64-pc-windows-gnu`로 크로스 컴파일 검증**했습니다
+— 코어 크레이트(`amux-core`·`amux-protocol`·`amux-cli`)는 **테스트 포함 그린**입니다. 남은
+미검증은 `src-tauri`(윈도우 리소스 컴파일러·WebView2가 필요해 리눅스 크로스 불가 — CI의
+windows job이 실검증)와 **모든 런타임 동작**뿐입니다. 컴파일 에러가 나면 십중팔구 아래입니다.
 
 | 파일 | 윈도우 분기 | 의도 |
 |---|---|---|
@@ -213,8 +222,13 @@ PTY, UI)는 그래서 신뢰도가 높습니다. 다만 아래 **cfg(windows) �
   `ListenerOptions::new().name(name).create_tokio()` → `listener.accept().await`.
   클라이언트(동기)는 `Stream::connect(name)`. tokio 스트림은 `tokio::io::split(stream)`로 분리.
 - `portable-pty` 0.9: `native_pty_system().openpty(PtySize{..})`,
-  `CommandBuilder::new(shell)`, `pty.slave.spawn_command(cmd)`. `master.process_group_leader()`는
-  윈도우에서 `None`을 반환하는 게 정상입니다(이러면 사이드바 cwd/git가 빈 값 — §9).
+  `CommandBuilder::new(shell)`, `pty.slave.spawn_command(cmd)`.
+  ⚠️ **함정(이미 고쳤음):** `master.process_group_leader()`는 portable-pty에서 **`#[cfg(unix)]`
+  전용**이라 윈도우엔 그 메서드가 **아예 없습니다.** 그냥 호출하면 "None을 반환"하는 게 아니라
+  `no method named process_group_leader`로 **컴파일이 막혀 `amux-core`가 통째로 빌드 실패**하고,
+  그러면 `bunx tauri build`(→ `amux-app` → `amux-core`)도 실패해 **.exe가 아예 안 만들어집니다.**
+  그래서 `pane.rs::shell_pid()`를 `#[cfg(unix)]`로 감싸 **윈도우에선 `None`**, Unix 분기는
+  글자 그대로 유지하도록 했습니다. 결과적으로 사이드바 cwd/git는 윈도우에서 빈 값이 됩니다(§9).
 
 자가검증은 `cargo test -p amux-core` (특히 `ipc_round_trip` = named pipe 왕복).
 
@@ -240,6 +254,18 @@ PTY, UI)는 그래서 신뢰도가 높습니다. 다만 아래 **cfg(windows) �
 3. **"이미 다른 인스턴스가 떠 있음" 가드가 윈도우엔 없습니다.** 유닉스는 stale 소켓을
    정리/감지하지만 named pipe는 다중 인스턴스를 허용합니다. 두 개를 동시에 띄우지 마세요.
    (parity 항목 — v1 차단 요소 아님.)
+4. **hook 없이는 상태 칩(🔴 작업 중 / 🟢 완료 / 🟡 입력 대기)이 윈도우에서 부정확할 수
+   있습니다.** amux는 pane 출력이 조용해지는 패턴으로 상태를 추측하는 휴리스틱(heuristic,
+   경험적 추정)을 쓰는데, "지금 포그라운드에 어떤 앱이 도는가"를 유닉스 프로세스 그룹으로
+   판별합니다. 윈도우 ConPTY엔 프로세스 그룹이 없어(위 §8 `shell_pid()`가 `None`) 이 판별이
+   빠지고 추정이 헐거워집니다. **해결: §7의 Claude 상태 hook을 설치하세요** — hook은 Claude가
+   상태를 직접 통보하므로 프로세스 그룹 추정에 의존하지 않고 윈도우에서도 정확합니다.
+5. **kitty 키보드 모드 자동 정리가 윈도우에선 동작하지 않습니다.** Claude Code 같은 앱이 켜는
+   특수 키보드 모드(kitty keyboard protocol)를, 앱이 **비정상 종료**하면 amux가 "셸이 다시
+   포그라운드로 돌아온 것"을 감지해 꺼줍니다(`meta/mod.rs`의 `compute()`). 이 감지도 프로세스
+   그룹에 의존해 윈도우에선 빠집니다. 영향 범위는 좁습니다 — 앱이 **정상 종료**하면 스스로
+   모드를 끄므로 문제없고, 앱이 **크래시**한 드문 경우에만 직후 셸 입력이 잠깐 이상해질 수
+   있습니다(새 셸/pane이면 정상). 윈도우용 깔끔한 대체 수단이 마땅치 않아 v1 한계로 둡니다.
 
 ---
 

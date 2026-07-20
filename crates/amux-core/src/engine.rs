@@ -817,6 +817,14 @@ mod tests {
     /// a user with no Claude hooks installed pins DONE on a pane where an app
     /// is live and painting. The silence heuristic runs every second and would
     /// call that `processing`.
+    ///
+    /// Unix-only: it drives a real `sleep 5` and waits for the PTY's foreground
+    /// process group leader to differ from the shell — foreground-process-group
+    /// semantics that don't map to Windows ConPTY (PowerShell's `sleep` is an
+    /// in-process cmdlet, so no distinct foreground PID appears). On Windows the
+    /// loop would spin to its deadline and fail, so we skip it there; the two
+    /// tests around it are platform-neutral and still cover the pin.
+    #[cfg(unix)]
     #[test]
     fn pinned_done_survives_the_silence_heuristic_while_an_app_paints() {
         let engine = Engine::new();

@@ -280,8 +280,24 @@ impl Pane {
     }
 
     /// PID of the foreground process group leader (what runs in the pane now).
+    ///
+    /// Unix-only: `process_group_leader` (tcgetpgrp on the PTY master) has no
+    /// Windows counterpart — ConPTY has no process groups — and portable-pty
+    /// only defines the method under `#[cfg(unix)]`. On Windows we return None,
+    /// which every caller already treats as "unknown": cwd/git meta fall back
+    /// to empty, and the silence heuristic to its shell-is-foreground path
+    /// (Windows status is driven by the Claude hooks instead — see
+    /// scripts/install-claude-hooks.py). Keeping the Unix arm byte-for-byte
+    /// identical means no behavior change on Linux/macOS.
     pub fn shell_pid(&self) -> Option<u32> {
-        self.master.lock().process_group_leader().map(|p| p as u32)
+        #[cfg(unix)]
+        {
+            self.master.lock().process_group_leader().map(|p| p as u32)
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
     }
 
     /// Root PID of the shell process spawned at pane creation.
