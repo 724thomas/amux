@@ -19,7 +19,18 @@ AI 코딩 에이전트(Claude Code 등)를 **병렬로** 돌리기 위한 Ubuntu
 
 ## 변경 내역
 
-### 미출시
+### v0.5.0
+- **🪟 윈도우 지원** — 원래 Ubuntu 전용이던 앱을 윈도우에서도 빌드·실행되도록
+  크로스플랫폼화. IPC를 `interprocess`(유닉스 소켓 ↔ named pipe)로, 기본 셸을 OS별
+  분기(윈도우=PowerShell)로, 패키징에 NSIS 설치본(.exe)을 추가. 설치·빌드 안내는
+  [`windows_install.md`](windows_install.md) 참고
+  - **윈도우 빌드 차단 버그 수정** — `portable-pty`의 `process_group_leader()`가 유닉스
+    전용이라 윈도우에선 `amux-core`가 컴파일조차 안 돼 `.exe`가 만들어지지 않던 문제.
+    `shell_pid()`를 cfg 게이트해 해결(리눅스 동작 무변경, `cargo check --target
+    x86_64-pc-windows-gnu`로 크로스 검증)
+- **빈 시작 + 새 워크스페이스 제목 입력 + 직전 명령 칩** — 실행 시 워크스페이스 없이
+  시작하고 `+ 새 워크스페이스`로 제목을 정해 만든다. 각 pane엔 마지막으로 보낸 명령을
+  최대 4줄로 고정 표시하는 드래그 가능한 칩
 - **🟣 DONE 상태 + pane 툴바 ✓ 버튼** — 작업이 끝나 검토 중인 pane을 직접 고정.
   자동 판정되는 나머지 네 상태와 달리 hook·벨·포커스·휴리스틱이 건드리지 못한다
 - **Shift+Enter 줄바꿈 수정** — 줄바꿈 대신 프롬프트가 제출되던 버그. 핸들러는
@@ -53,11 +64,13 @@ AI 코딩 에이전트(Claude Code 등)를 **병렬로** 돌리기 위한 Ubuntu
 
 ## 설치
 
-[**Releases**](https://github.com/724thomas/amux/releases)에서 최신 `.deb`를 받아 설치합니다:
+[**Releases**](https://github.com/724thomas/amux/releases)에서 OS에 맞는 설치본을 받습니다.
+
+**리눅스 (Ubuntu/Debian)** — `.deb`:
 
 ```bash
-wget https://github.com/724thomas/amux/releases/download/v0.4.0/amux_0.4.0_amd64.deb
-sudo apt install ./amux_0.4.0_amd64.deb
+wget https://github.com/724thomas/amux/releases/download/v0.5.0/amux_0.5.0_amd64.deb
+sudo apt install ./amux_0.5.0_amd64.deb
 ```
 
 - GNOME 앱 목록에 **amux** 아이콘 등록, `amux` CLI는 `/usr/bin/amux`로 설치
@@ -69,6 +82,14 @@ sudo apt install ./amux_0.4.0_amd64.deb
 ```bash
 WEBKIT_DISABLE_DMABUF_RENDERER=1 amux-app
 ```
+
+**윈도우 (10/11)** — NSIS 설치본(`.exe`):
+
+Releases에서 윈도우 설치본(`amux_0.5.0_x64-setup.exe` 형태)을 받아 실행하면 설치됩니다.
+`amux` CLI(`amux.exe`)를 PATH에 넣고 Claude 상태 연동 hook을 켜는 방법 등 자세한 안내는
+[`windows_install.md`](windows_install.md)를 참고하세요. (윈도우 바이너리는 리눅스에서 만들 수
+없어, `v*` 태그를 푸시하면 GitHub Actions의 windows-latest 러너가 자동으로 빌드해 같은
+릴리스에 첨부합니다.)
 
 ## 사용법
 

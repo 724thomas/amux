@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "amux-app"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "amux-core",
  "amux-protocol",
@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "amux-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "amux-protocol",
  "anyhow",
@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "amux-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alacritty_terminal",
  "amux-protocol",
@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "amux-protocol"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "serde",
  "serde_json",
