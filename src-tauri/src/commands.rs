@@ -92,6 +92,12 @@ pub fn rename_pane(engine: Eng<'_>, pane: PaneId, name: String) -> Result<(), St
     engine.rename_pane(pane, name).map_err(err)
 }
 
+/// Pin/unpin the `done` (under review) status — the pane toolbar's check button.
+#[tauri::command]
+pub fn set_pane_done(engine: Eng<'_>, pane: PaneId, done: bool) -> Result<(), String> {
+    engine.set_pane_done(pane, done).map_err(err)
+}
+
 #[tauri::command]
 pub fn move_pane(
     engine: Eng<'_>,

@@ -3,14 +3,13 @@
 // attachCustomKeyEventHandler, so shortcuts win over the terminal.
 import {
   closePane,
-  createWorkspace,
   focusPane,
   focusWorkspace,
   splitPane,
   type LayoutNode,
   type PaneId,
 } from "./ipc";
-import { activePane, activeWorkspace, app, broadcast, palette, dashboard } from "./state.svelte";
+import { activePane, activeWorkspace, app, broadcast, palette, dashboard, wsCreate } from "./state.svelte";
 import { adjustFontSize, resetFontSize } from "./settings.svelte";
 
 interface Rect {
@@ -100,7 +99,8 @@ export function handleKey(e: KeyboardEvent): boolean {
     }
     switch (e.code) {
       case "KeyT":
-        void createWorkspace();
+        // Open the new-workspace title prompt (the Sidebar renders the input).
+        wsCreate.open = true;
         return true;
       case "KeyD": {
         const pane = activePane();

@@ -295,6 +295,9 @@
   .pal-dot.waiting {
     background: var(--yellow);
   }
+  .pal-dot.done {
+    background: var(--done);
+  }
   .pal-label {
     flex-shrink: 0;
     white-space: nowrap;

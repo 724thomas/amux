@@ -208,6 +208,12 @@ fn dispatch(
             Ok(Value::Null)
         }
 
+        "pane.set_done" => {
+            let p: PaneSetDoneParams = parse(params)?;
+            engine.set_pane_done(resolve_pane(engine, &p.pane)?, p.done)?;
+            Ok(Value::Null)
+        }
+
         "pane.send_text" => {
             let p: SendTextParams = parse(params)?;
             engine.write_pane(resolve_pane(engine, &p.pane)?, p.text.as_bytes())?;

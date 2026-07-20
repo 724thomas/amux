@@ -12,7 +12,7 @@
   import "@xterm/xterm/css/xterm.css";
   import { writePane, resizePane, subscribePane, type PaneId } from "./ipc";
   import { handleKey } from "./keymap";
-  import { adjustFontSize, settings } from "./settings.svelte";
+  import { adjustFontSize, settings, setLastInputPos, saveSettings } from "./settings.svelte";
   import { themeById } from "./themes";
   import { paneInfo, registerTermFocus, broadcast, broadcastTargets } from "./state.svelte";
 
@@ -31,6 +31,144 @@
   let menu = $state<{ x: number; y: number } | null>(null);
   let term = $state<Terminal>()!;
   let refit: (() => void) | undefined;
+
+  // ── Last-command chip ─────────────────────────────────────────────────
+  // Pin the user's most recently *submitted command* (up to 4 lines) inside
+  // the pane, in a draggable chip. We reconstruct the line from the keystrokes
+  // the user types (term.onData); it's accurate for typed/pasted prompts. We
+  // mirror Claude's submit rule: Enter submits UNLESS the line ends with "\"
+  // or is a modified Enter (Shift/Alt) — those insert a newline — so multi-line
+  // prompts land as one command. Trivial confirmations (y/n, menu numbers,
+  // single keys) are ignored so a one-key answer to a tool prompt doesn't
+  // replace the real command. Known
+  // limits: a ↑-recalled line arrives on the OUTPUT stream (not here), so it
+  // shows the previous captured value, and heavy in-line editing (arrows)
+  // reconstructs only approximately.
+  let lastInput = $state("");
+  let inputBuf = ""; // in-progress line; committed to lastInput on plain Enter
+  let inPaste = false; // inside a bracketed-paste block (\x1b[200~ … \x1b[201~)
+  // Drag state for repositioning the chip (position persists in settings).
+  let bannerEl = $state<HTMLDivElement>();
+  let dragging = $state(false);
+  let dragOrigin = { px: 0, py: 0, x: 0, y: 0 };
+
+  function commitLine() {
+    const t = inputBuf.trim();
+    inputBuf = "";
+    // Ignore trivial confirmations so the chip keeps the last *real* command.
+    if (!t || t.length <= 1 || /^(y|n|yes|no|\d{1,3})$/i.test(t)) return;
+    lastInput = t;
+  }
+
+  function bannerPointerDown(e: PointerEvent) {
+    dragging = true;
+    dragOrigin = {
+      px: e.clientX,
+      py: e.clientY,
+      x: settings.lastInputPos?.x ?? 8,
+      y: settings.lastInputPos?.y ?? 6,
+    };
+    bannerEl?.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  function bannerPointerMove(e: PointerEvent) {
+    if (!dragging) return;
+    const bw = bannerEl?.offsetWidth ?? 0;
+    const bh = bannerEl?.offsetHeight ?? 0;
+    const maxX = Math.max(0, host.clientWidth - bw);
+    const maxY = Math.max(0, host.clientHeight - bh);
+    const x = Math.max(0, Math.min(maxX, dragOrigin.x + (e.clientX - dragOrigin.px)));
+    const y = Math.max(0, Math.min(maxY, dragOrigin.y + (e.clientY - dragOrigin.py)));
+    setLastInputPos(x, y);
+  }
+  function bannerPointerUp(e: PointerEvent) {
+    if (!dragging) return;
+    dragging = false;
+    bannerEl?.releasePointerCapture(e.pointerId);
+    saveSettings(); // persist the resting position once, on drop
+  }
+
+  function trackInput(data: string) {
+    let i = 0;
+    while (i < data.length) {
+      // Bracketed paste: take the pasted text literally, drop the markers.
+      if (inPaste) {
+        const end = data.indexOf("\x1b[201~", i);
+        if (end === -1) {
+          inputBuf += data.slice(i);
+          return;
+        }
+        inputBuf += data.slice(i, end);
+        inPaste = false;
+        i = end + 6;
+        continue;
+      }
+      if (data.startsWith("\x1b[200~", i)) {
+        inPaste = true;
+        i += 6;
+        continue;
+      }
+      // Shift+Enter (both encodings this pane emits) → newline within the line.
+      if (data.startsWith("\x1b\r", i)) {
+        inputBuf += "\n";
+        i += 2;
+        continue;
+      }
+      // Modified Enter in kitty mode (\x1b[13;<mods>u, ANY modifier) → newline.
+      if (data.startsWith("\x1b[13;", i)) {
+        const u = data.indexOf("u", i + 5);
+        if (u !== -1 && /^\d+$/.test(data.slice(i + 5, u))) {
+          inputBuf += "\n";
+          i = u + 1;
+          continue;
+        }
+      }
+      const ch = data[i];
+      if (ch === "\r" || ch === "\n") {
+        // Enter submits ONLY when the line doesn't end with a backslash.
+        // "\"+Enter is a line-continuation (newline) — the same rule Claude and
+        // the shell use — so drop the backslash and keep composing. (Shift/Alt
+        // +Enter, handled above, are newlines too.)
+        if (inputBuf.endsWith("\\")) {
+          inputBuf = inputBuf.slice(0, -1) + "\n";
+        } else {
+          commitLine();
+        }
+        i += 1;
+        continue;
+      }
+      if (ch === "\x7f" || ch === "\b") {
+        inputBuf = inputBuf.slice(0, -1); // backspace
+        i += 1;
+        continue;
+      }
+      if (ch === "\x15" || ch === "\x03") {
+        inputBuf = ""; // Ctrl+U (kill line) / Ctrl+C (abandon)
+        i += 1;
+        continue;
+      }
+      if (ch === "\x1b") {
+        // Unhandled escape (arrows, Home/End, …): skip the whole sequence so
+        // cursor moves don't land as literal text.
+        i += 1;
+        if (data[i] === "[" || data[i] === "O") {
+          i += 1;
+          while (i < data.length && !(data[i] >= "@" && data[i] <= "~")) i += 1;
+          i += 1; // consume the final byte
+        } else {
+          i += 1; // ESC + single char (Alt+key, lone Esc)
+        }
+        continue;
+      }
+      if (ch < " ") {
+        i += 1; // other control bytes: ignore
+        continue;
+      }
+      inputBuf += ch;
+      i += 1;
+    }
+  }
 
   // ── Activity widgets ──────────────────────────────────────────────────
   // Two visualizers of the SAME signal — this pane's output byte-rate (never
@@ -161,6 +299,12 @@
         !e.ctrlKey &&
         !e.altKey
       ) {
+        // preventDefault가 없으면 브라우저가 이어서 keypress를 쏘고, xterm은
+        // 거기서 charCode 13을 그대로 PTY에 보낸다(`_keyPress` → `\r`). 우리가
+        // 보낸 줄바꿈 직후 Enter가 한 번 더 들어가 프롬프트가 제출돼 버리므로
+        // (핸들러가 false를 반환해도 xterm은 preventDefault를 대신 해주지 않음)
+        // keypress 자체를 막아야 한다.
+        e.preventDefault();
         void writePane(pane, kitty ? "\x1b[13;2u" : "\x1b\r");
         return false;
       }
@@ -413,6 +557,7 @@
     });
     term.onData((data) => {
       clearKeyboardSelection();
+      trackInput(data);
       void writePane(pane, data);
       // Broadcast (synchronize-panes): mirror this pane's input to every other
       // live pane in the workspace. Only the focused pane originates; writePane
@@ -558,6 +703,25 @@
   }}
 ></div>
 
+{#if settings.showLastInput && lastInput}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="last-input"
+    class:dragging
+    bind:this={bannerEl}
+    aria-hidden="true"
+    title="드래그해서 위치 이동"
+    style="left: {settings.lastInputPos?.x ?? 8}px; top: {settings.lastInputPos?.y ?? 6}px"
+    onpointerdown={bannerPointerDown}
+    onpointermove={bannerPointerMove}
+    onpointerup={bannerPointerUp}
+    onpointercancel={bannerPointerUp}
+  >
+    <span class="li-label"><span class="li-grip">⠿</span> 직전 명령</span>
+    <span class="li-text" style="font-size: {settings.fontSize}px">{lastInput}</span>
+  </div>
+{/if}
+
 <div class="wave-lab" aria-hidden="true">
   <canvas class="wl wave" bind:this={waveCanvas}></canvas>
   <canvas class="wl arc" bind:this={arcCanvas}></canvas>
@@ -610,6 +774,53 @@
     width: 100%;
     height: 100%;
     background: var(--bg);
+  }
+  /* Last-command chip — the user's most recent submitted command, floating
+     inside the pane as a draggable chip. Overlay only (never resizes the PTY).
+     Position comes from settings (inline left/top); clamped to 4 lines. */
+  .last-input {
+    position: absolute;
+    z-index: 3;
+    width: fit-content;
+    max-width: min(520px, calc(100% - 16px));
+    pointer-events: auto;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+    padding: 3px 10px 5px;
+    background: color-mix(in srgb, var(--surface-2) 96%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    border-radius: 7px;
+    box-shadow: 0 3px 12px -3px rgba(0, 0, 0, 0.5);
+  }
+  .last-input.dragging {
+    cursor: grabbing;
+    box-shadow: 0 6px 20px -4px rgba(0, 0, 0, 0.6);
+  }
+  .li-label {
+    display: block;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    color: var(--accent);
+    opacity: 0.85;
+    margin-bottom: 1px;
+  }
+  .li-grip {
+    color: var(--muted);
+    opacity: 0.8;
+  }
+  .li-text {
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    /* font-size is set inline to track the terminal (prompt) font size. */
+    line-height: 1.35;
+    color: var(--text-2);
+    white-space: pre-wrap;
+    word-break: break-word;
   }
   /* Activity widgets — the oscilloscope waveform (left) paired with the Arc
      Reactor core (right), in the pane's top-right corner. Above the terminal,

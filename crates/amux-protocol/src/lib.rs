@@ -88,7 +88,7 @@ pub struct PaneNotification {
 }
 
 /// Pane work status, shown as a colored chip in the sidebar.
-/// Every pane is always in exactly one of these four states.
+/// Every pane is always in exactly one of these five states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PaneStatus {
@@ -101,6 +101,21 @@ pub enum PaneStatus {
     Idle,
     /// The app is waiting for user input — hook/bell signal (yellow).
     Waiting,
+    /// The user marked this pane done and under review (magenta). Unlike the
+    /// other four, this one is *pinned*: it is set only by an explicit
+    /// `pane.set_done` and no automatic writer (hooks, bell, silence
+    /// heuristic, focus) may overwrite it. Being in this state IS the pin —
+    /// there is no separate flag to keep in sync. Clearing it hands the pane
+    /// back to the automatic states.
+    Done,
+}
+
+impl PaneStatus {
+    /// Pinned states are owned by the user; every automatic status writer
+    /// must bail on them. See `Engine::set_pane_status`.
+    pub fn is_pinned(self) -> bool {
+        matches!(self, PaneStatus::Done)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -343,6 +358,13 @@ pub mod methods {
         pub kind: crate::NotifyKind,
         pub title: Option<String>,
         pub body: Option<String>,
+    }
+
+    /// Pin/unpin the `done` (under review) status on a pane.
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct PaneSetDoneParams {
+        pub pane: String,
+        pub done: bool,
     }
 }
 

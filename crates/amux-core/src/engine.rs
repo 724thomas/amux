@@ -334,7 +334,7 @@ impl Engine {
                     return;
                 }
                 *pane.waiting_since.lock() = Some(std::time::Instant::now());
-                *pane.status.lock() = PaneStatus::Waiting;
+                self.set_pane_status(&pane, PaneStatus::Waiting);
             }
             NotifyKind::Progress => {
                 // Drop a same-turn straggler arriving just after `done`.
@@ -347,7 +347,7 @@ impl Engine {
                 pane.turn_active.store(true, Ordering::SeqCst);
                 *pane.last_done_at.lock() = None;
                 *pane.waiting_since.lock() = None;
-                *pane.status.lock() = PaneStatus::Processing;
+                self.set_pane_status(&pane, PaneStatus::Processing);
                 self.notify_state_changed();
                 return; // quiet: no desktop notification, no ring, no history
             }
@@ -356,8 +356,8 @@ impl Engine {
                 pane.turn_active.store(false, Ordering::SeqCst);
                 *pane.last_done_at.lock() = Some(std::time::Instant::now());
                 *pane.waiting_since.lock() = None;
-                *pane.status.lock() =
-                    if visible { PaneStatus::Idle } else { PaneStatus::Processed };
+                let resolved = if visible { PaneStatus::Idle } else { PaneStatus::Processed };
+                self.set_pane_status(&pane, resolved);
             }
             NotifyKind::Idle => {
                 // SessionStart hook: the app declares itself idle and
@@ -366,7 +366,7 @@ impl Engine {
                 pane.turn_active.store(false, Ordering::SeqCst);
                 *pane.last_done_at.lock() = None;
                 *pane.waiting_since.lock() = None;
-                *pane.status.lock() = PaneStatus::Idle;
+                self.set_pane_status(&pane, PaneStatus::Idle);
                 self.notify_state_changed();
                 return; // quiet: a fresh session is not an announcement
             }
@@ -406,6 +406,42 @@ impl Engine {
         history.truncate(HISTORY_CAP);
         drop(history);
         self.notify_state_changed();
+    }
+
+    /// The one funnel for every *automatic* status write (hooks, bell, the
+    /// silence heuristic, focus). A pinned status is the user's explicit call,
+    /// so all of them no-op on it — only `set_pane_done` moves a pane out.
+    ///
+    /// Callers must not already hold `pane.status`; `sweep_status` does, and
+    /// therefore checks `is_pinned` inline instead of going through here.
+    fn set_pane_status(&self, pane: &Pane, new: PaneStatus) {
+        let mut status = pane.status.lock();
+        if !status.is_pinned() {
+            *status = new;
+        }
+    }
+
+    /// Pin/unpin `done` (finished, under review) on a pane — the toolbar's
+    /// check button. Pinning overrides whatever the automatic writers left
+    /// there and freezes it; unpinning drops the pane to `idle` and hands it
+    /// back to hooks/heuristic, which re-derive from live activity within a
+    /// sweep tick. Unpinning a pane that was not pinned does nothing.
+    pub fn set_pane_done(&self, id: PaneId, done: bool) -> Result<(), EngineError> {
+        let pane = self.pane(id)?;
+        {
+            let mut status = pane.status.lock();
+            // `done` IS the pin, so the pane is already in the requested shape
+            // whenever pinned-ness matches the request — nothing to do.
+            if status.is_pinned() == done {
+                return Ok(());
+            }
+            *status = if done { PaneStatus::Done } else { PaneStatus::Idle };
+        }
+        // A pinned pane is settled: drop the in-flight waiting signal so an
+        // old one can't resolve into `waiting` the moment the pin lifts.
+        *pane.waiting_since.lock() = None;
+        self.notify_state_changed();
+        Ok(())
     }
 
     pub fn clear_notification_history(&self) {
@@ -629,6 +665,13 @@ impl Engine {
         let mut status = pane.status.lock();
         let old = *status;
 
+        // The user pinned this pane (done/under review) — the heuristic has no
+        // say until they unpin it. Checked inline because we hold the lock that
+        // `set_pane_status` would take.
+        if old.is_pinned() {
+            return false;
+        }
+
         // In-flight work resolves to processed (or straight to idle when the
         // user is already looking); settled states stay as they are.
         let finished = |old: PaneStatus| match old {
@@ -704,6 +747,8 @@ impl Engine {
     fn mark_pane_seen(&self, id: PaneId) {
         let Ok(pane) = self.pane(id) else { return };
         {
+            // Whitelist, not a blacklist: a pinned `done` is deliberately not
+            // listed, so merely looking at a pane never lifts the user's pin.
             let mut status = pane.status.lock();
             if matches!(*status, PaneStatus::Processed | PaneStatus::Waiting) {
                 *status = PaneStatus::Idle;
@@ -718,5 +763,119 @@ impl Engine {
         for pane in self.panes.write().drain().map(|(_, p)| p) {
             pane.kill();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pin's entire point: `done` belongs to the user, so every *automatic*
+    /// status writer must bail on it. Enumerated on purpose — each of these is
+    /// a separate code path that has taken the status in the past (hooks/bell
+    /// via `notify_pane`, focus via `mark_pane_seen`, silence via
+    /// `sweep_status`), and missing any one of them is invisible until a user
+    /// watches their DONE pane silently flip back.
+    #[test]
+    fn pinned_done_survives_every_automatic_writer() {
+        let engine = Engine::new();
+        let (_ws, id) = engine.create_workspace(None, None, 80, 24).unwrap();
+        let pane = engine.pane(id).unwrap();
+
+        engine.set_pane_done(id, true).unwrap();
+        assert_eq!(*pane.status.lock(), PaneStatus::Done);
+
+        for kind in [
+            NotifyKind::Attention,
+            NotifyKind::Bell,
+            NotifyKind::Progress,
+            NotifyKind::Done,
+            NotifyKind::Idle,
+        ] {
+            engine.notify_pane(id, kind, None, None);
+            assert_eq!(*pane.status.lock(), PaneStatus::Done, "{kind:?} overwrote the pin");
+        }
+
+        engine.mark_pane_seen(id);
+        assert_eq!(*pane.status.lock(), PaneStatus::Done, "focusing overwrote the pin");
+
+        // The heuristic is covered by its own test below: these notifications
+        // leave the pane hook-managed, which is exactly the state in which
+        // `sweep_status` stands down anyway, so asserting on it here would
+        // pass no matter what the pin does.
+
+        // Unpinning hands the pane back to the automatic writers, from `idle`.
+        engine.set_pane_done(id, false).unwrap();
+        assert_eq!(*pane.status.lock(), PaneStatus::Idle);
+        engine.notify_pane(id, NotifyKind::Progress, None, None);
+        assert_eq!(*pane.status.lock(), PaneStatus::Processing, "writers stayed locked out");
+
+        engine.shutdown();
+    }
+
+    /// The riskiest overwrite path, and the one the test above cannot reach:
+    /// a user with no Claude hooks installed pins DONE on a pane where an app
+    /// is live and painting. The silence heuristic runs every second and would
+    /// call that `processing`.
+    ///
+    /// Unix-only: it drives a real `sleep 5` and waits for the PTY's foreground
+    /// process group leader to differ from the shell — foreground-process-group
+    /// semantics that don't map to Windows ConPTY (PowerShell's `sleep` is an
+    /// in-process cmdlet, so no distinct foreground PID appears). On Windows the
+    /// loop would spin to its deadline and fail, so we skip it there; the two
+    /// tests around it are platform-neutral and still cover the pin.
+    #[cfg(unix)]
+    #[test]
+    fn pinned_done_survives_the_silence_heuristic_while_an_app_paints() {
+        let engine = Engine::new();
+        let (_ws, id) = engine.create_workspace(None, None, 80, 24).unwrap();
+        let pane = engine.pane(id).unwrap();
+
+        // The heuristic's live-work branches only engage while a foreground
+        // app (not the shell itself) holds the terminal.
+        engine.write_pane(id, b"sleep 5\n").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let fg = pane.shell_pid();
+            if fg.is_some() && fg != pane.child_pid() {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "`sleep` never took the foreground");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        engine.set_pane_done(id, true).unwrap();
+        assert!(
+            !pane.hook_managed.load(Ordering::SeqCst),
+            "this test is only meaningful on the hookless path",
+        );
+
+        // Fresh work output: unpinned, this pane is squarely `processing`.
+        pane.activity.lock().last_output = std::time::Instant::now();
+        assert!(!engine.sweep_status(&pane), "the heuristic reported a change on a pinned pane");
+        assert_eq!(*pane.status.lock(), PaneStatus::Done, "the heuristic overwrote the pin");
+
+        engine.shutdown();
+    }
+
+    /// Both toggle directions are idempotent, and unpinning a pane that was
+    /// never pinned must not knock a live status back to `idle`.
+    #[test]
+    fn unpinning_an_unpinned_pane_leaves_its_status_alone() {
+        let engine = Engine::new();
+        let (_ws, id) = engine.create_workspace(None, None, 80, 24).unwrap();
+        let pane = engine.pane(id).unwrap();
+
+        engine.notify_pane(id, NotifyKind::Progress, None, None);
+        assert_eq!(*pane.status.lock(), PaneStatus::Processing);
+
+        engine.set_pane_done(id, false).unwrap();
+        assert_eq!(*pane.status.lock(), PaneStatus::Processing);
+
+        engine.set_pane_done(id, true).unwrap();
+        engine.set_pane_done(id, true).unwrap();
+        assert_eq!(*pane.status.lock(), PaneStatus::Done);
+
+        engine.shutdown();
     }
 }
