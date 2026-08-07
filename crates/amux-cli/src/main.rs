@@ -33,12 +33,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// List workspaces and panes
+    /// List workspaces, tabs and panes
     Ls,
     /// Workspace operations
     #[command(subcommand)]
     Ws(WsCommand),
-    /// Split a pane (defaults to the calling pane via $AMUX_PANE_ID)
+    /// Tab operations (a tab is one named screen inside a workspace)
+    #[command(subcommand)]
+    Tab(TabCommand),
+    /// Split a pane *within its tab* (defaults to the calling pane via $AMUX_PANE_ID)
     Split {
         pane: Option<String>,
         /// Split side-by-side (default)
@@ -94,6 +97,23 @@ enum WsCommand {
     },
     /// Focus a workspace
     Focus { workspace: String },
+}
+
+#[derive(Subcommand)]
+enum TabCommand {
+    /// Open a tab (defaults to the active workspace)
+    New {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Close a tab and every pane in it
+    Close { tab: String },
+    /// Bring a tab on screen
+    Focus { tab: String },
+    /// Rename a tab — the name every pane inside it is shown under
+    Rename { tab: String, name: String },
 }
 
 struct Client {
@@ -189,28 +209,46 @@ fn main() -> anyhow::Result<()> {
                 );
                 return Ok(());
             }
+            // Three levels now: workspace → tab (the named unit) → pane.
             for ws in workspaces.as_array().unwrap_or(&Vec::new()) {
                 let ws_id = ws["id"].as_str().unwrap_or_default();
                 println!("{}  {}", short(ws_id, "w"), ws["name"].as_str().unwrap_or(""));
-                for pane in panes.as_array().unwrap_or(&Vec::new()) {
-                    if pane["workspace"] != ws["id"] {
-                        continue;
-                    }
-                    let pane_id = pane["id"].as_str().unwrap_or_default();
-                    let active = if pane["id"] == ws["active_pane"] { "*" } else { " " };
-                    let meta = &pane["meta"];
-                    let branch = meta["git_branch"].as_str().map(|b| format!("⎇ {b} ")).unwrap_or_default();
-                    let ports: Vec<String> = meta["listening_ports"]
-                        .as_array()
-                        .map(|a| a.iter().filter_map(|p| p.as_u64()).map(|p| format!(":{p}")).collect())
-                        .unwrap_or_default();
+                for tab in ws["tabs"].as_array().unwrap_or(&Vec::new()) {
+                    let tab_id = tab["id"].as_str().unwrap_or_default();
+                    let on_screen = if tab["id"] == ws["active_tab"] { "*" } else { " " };
                     println!(
-                        "  {active} {}  {}{}  {}",
-                        short(pane_id, "p"),
-                        branch,
-                        meta["cwd"].as_str().unwrap_or(""),
-                        ports.join(" "),
+                        "  {on_screen} {}  {}",
+                        short(tab_id, "t"),
+                        tab["name"].as_str().unwrap_or(""),
                     );
+                    for pane in panes.as_array().unwrap_or(&Vec::new()) {
+                        if pane["tab"] != tab["id"] {
+                            continue;
+                        }
+                        let pane_id = pane["id"].as_str().unwrap_or_default();
+                        let focused = if pane["id"] == tab["active_pane"] { "*" } else { " " };
+                        let meta = &pane["meta"];
+                        let branch = meta["git_branch"]
+                            .as_str()
+                            .map(|b| format!("⎇ {b} "))
+                            .unwrap_or_default();
+                        let ports: Vec<String> = meta["listening_ports"]
+                            .as_array()
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|p| p.as_u64())
+                                    .map(|p| format!(":{p}"))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        println!(
+                            "    {focused} {}  {}{}  {}",
+                            short(pane_id, "p"),
+                            branch,
+                            meta["cwd"].as_str().unwrap_or(""),
+                            ports.join(" "),
+                        );
+                    }
                 }
             }
             return Ok(());
@@ -223,6 +261,22 @@ fn main() -> anyhow::Result<()> {
 
         Command::Ws(WsCommand::Focus { workspace }) => {
             client.call("workspace.focus", json!({ "workspace": workspace }))?
+        }
+
+        Command::Tab(TabCommand::New { workspace, name }) => {
+            client.call("tab.new", json!({ "workspace": workspace, "name": name }))?
+        }
+
+        Command::Tab(TabCommand::Close { tab }) => {
+            client.call("tab.close", json!({ "tab": tab }))?
+        }
+
+        Command::Tab(TabCommand::Focus { tab }) => {
+            client.call("tab.focus", json!({ "tab": tab }))?
+        }
+
+        Command::Tab(TabCommand::Rename { tab, name }) => {
+            client.call("tab.rename", json!({ "tab": tab, "name": name }))?
         }
 
         Command::Split { pane, down, .. } => {

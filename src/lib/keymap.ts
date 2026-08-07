@@ -2,14 +2,27 @@
 // Used by both a window-level keydown listener and xterm's
 // attachCustomKeyEventHandler, so shortcuts win over the terminal.
 import {
-  closePane,
+  closeTab,
+  closeWorkspace,
   focusPane,
+  focusTab,
   focusWorkspace,
+  newTab,
   splitPane,
   type LayoutNode,
   type PaneId,
 } from "./ipc";
-import { activePane, activeWorkspace, app, broadcast, palette, dashboard, wsCreate } from "./state.svelte";
+import {
+  activePane,
+  activeTab,
+  activeWorkspace,
+  app,
+  broadcast,
+  palette,
+  dashboard,
+  toggleComposerFocus,
+  wsCreate,
+} from "./state.svelte";
 import { adjustFontSize, resetFontSize } from "./settings.svelte";
 
 interface Rect {
@@ -36,12 +49,13 @@ function paneRects(node: LayoutNode, rect: Rect, out: Map<PaneId, Rect>) {
 
 type Direction = "left" | "right" | "up" | "down";
 
+/** Move focus to the neighbouring pane *within the current tab*. */
 function navigate(direction: Direction) {
-  const ws = activeWorkspace();
+  const tab = activeTab();
   const current = activePane();
-  if (!ws || !current) return;
+  if (!tab || !current) return;
   const rects = new Map<PaneId, Rect>();
-  paneRects(ws.layout, { x: 0, y: 0, w: 1, h: 1 }, rects);
+  paneRects(tab.layout, { x: 0, y: 0, w: 1, h: 1 }, rects);
   const from = rects.get(current);
   if (!from) return;
   const fc = { x: from.x + from.w / 2, y: from.y + from.h / 2 };
@@ -81,27 +95,70 @@ function focusWorkspaceByIndex(index: number) {
   if (ws) void focusWorkspace(ws.id);
 }
 
-/** Returns true when the event was consumed as an app shortcut. */
+/** Next / previous tab within the workspace on screen, wrapping around. */
+function cycleTab(offset: number) {
+  const ws = activeWorkspace();
+  if (!ws || ws.tabs.length === 0) return;
+  const index = ws.tabs.findIndex((t) => t.id === ws.active_tab);
+  const next = (index + offset + ws.tabs.length) % ws.tabs.length;
+  void focusTab(ws.tabs[next].id);
+}
+
+/** Jump to the Nth tab by its position in the tab bar (0-based). */
+function focusTabByIndex(index: number) {
+  const tab = activeWorkspace()?.tabs[index];
+  if (tab) void focusTab(tab.id);
+}
+
+/**
+ * Returns true when the event was consumed as an app shortcut.
+ *
+ * One keydown reaches us twice while the keyboard is inside a terminal: xterm's
+ * `attachCustomKeyEventHandler` sees it first, declines to handle it, and the
+ * event then bubbles on to the window listener. Running an action on both
+ * passes would open two tabs per Ctrl+T, so the first pass stamps the event and
+ * the second one only repeats the "consumed" answer (the caller still needs it
+ * to `preventDefault`).
+ */
 export function handleKey(e: KeyboardEvent): boolean {
   if (e.type !== "keydown") return false;
+  const stamped = e as KeyboardEvent & { __amuxHandled?: boolean };
+  if (stamped.__amuxHandled) return true;
+  const consumed = dispatch(e);
+  if (consumed) stamped.__amuxHandled = true;
+  return consumed;
+}
 
+function dispatch(e: KeyboardEvent): boolean {
   // Dashboard overlay is modal: Esc closes it.
   if (dashboard.open && e.key === "Escape") {
     dashboard.open = false;
     return true;
   }
 
+  // Ctrl+Tab / Ctrl+Shift+Tab → next / previous tab, browser-style.
+  if (e.ctrlKey && !e.altKey && e.code === "Tab") {
+    cycleTab(e.shiftKey ? -1 : 1);
+    return true;
+  }
+
   if (e.ctrlKey && e.shiftKey && !e.altKey) {
-    // Ctrl+Shift+1..9 → jump to the Nth workspace tab by position.
+    // Ctrl+Shift+1..9 → jump to the Nth workspace by sidebar position.
     if (/^Digit[1-9]$/.test(e.code)) {
       focusWorkspaceByIndex(Number(e.code.slice(5)) - 1);
       return true;
     }
     switch (e.code) {
-      case "KeyT":
+      case "KeyN":
         // Open the new-workspace title prompt (the Sidebar renders the input).
         wsCreate.open = true;
         return true;
+      case "KeyW": {
+        // Closes the whole workspace — every tab in it, every pane in those.
+        const ws = activeWorkspace();
+        if (ws) void closeWorkspace(ws.id).catch(() => {});
+        return true;
+      }
       case "KeyD": {
         const pane = activePane();
         if (pane) void splitPane(pane, "horizontal");
@@ -112,37 +169,29 @@ export function handleKey(e: KeyboardEvent): boolean {
         if (pane) void splitPane(pane, "vertical");
         return true;
       }
-      case "KeyW": {
-        const pane = activePane();
-        if (pane) void closePane(pane);
-        return true;
-      }
       case "KeyB":
-        // Broadcast toggle (synchronize-panes). Tag the event so a double
-        // dispatch (xterm's key handler + the window listener both seeing the
-        // same keydown) still flips the mode exactly once.
-        if (!(e as KeyboardEvent & { __amuxBcast?: boolean }).__amuxBcast) {
-          (e as KeyboardEvent & { __amuxBcast?: boolean }).__amuxBcast = true;
-          broadcast.on = !broadcast.on;
-        }
+        broadcast.on = !broadcast.on;
         return true;
       case "KeyP":
         palette.open = true;
         return true;
-      case "KeyA": {
-        // Dashboard (Mission Control) overlay toggle. Guard against the double
-        // dispatch (xterm's key handler + the window listener both see this).
-        const ev = e as KeyboardEvent & { __amuxDash?: boolean };
-        if (!ev.__amuxDash) {
-          ev.__amuxDash = true;
-          dashboard.open = !dashboard.open;
-        }
+      case "KeyE":
+        // Hop between the pane's bottom composer and its terminal (turning the
+        // composer on if it's hidden).
+        toggleComposerFocus(activePane());
         return true;
-      }
+      case "KeyA":
+        dashboard.open = !dashboard.open;
+        return true;
     }
   }
 
   if (e.altKey && !e.ctrlKey && !e.shiftKey) {
+    // Alt+1..9 → jump to the Nth tab of the workspace on screen.
+    if (/^Digit[1-9]$/.test(e.code)) {
+      focusTabByIndex(Number(e.code.slice(5)) - 1);
+      return true;
+    }
     const dir = {
       ArrowLeft: "left",
       ArrowRight: "right",
@@ -156,6 +205,19 @@ export function handleKey(e: KeyboardEvent): boolean {
   }
 
   if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+    // Ctrl+T / Ctrl+W — browser tab muscle memory. Both are keys a shell would
+    // otherwise use (Ctrl+W deletes a word, Ctrl+T is fzf's file search), so
+    // they are deliberately taken from the terminal here.
+    if (e.code === "KeyT") {
+      const ws = activeWorkspace();
+      if (ws) void newTab(ws.id);
+      return true;
+    }
+    if (e.code === "KeyW") {
+      const tab = activeTab();
+      if (tab) void closeTab(tab.id).catch(() => {});
+      return true;
+    }
     if (e.key === "PageUp") {
       cycleWorkspace(-1);
       return true;

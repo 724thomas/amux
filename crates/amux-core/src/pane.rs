@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use amux_protocol::{env_keys, PaneId, PaneMeta, PaneNotification, PaneStatus, WorkspaceId};
+use amux_protocol::{env_keys, PaneId, PaneMeta, PaneNotification, PaneStatus, TabId, WorkspaceId};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
@@ -31,7 +31,9 @@ const ECHO_WINDOW: std::time::Duration = std::time::Duration::from_millis(1500);
 pub struct Pane {
     pub id: PaneId,
     pub workspace: WorkspaceId,
-    pub name: Mutex<String>,
+    /// The tab this pane is a leaf of. Mutable because a pane can be moved
+    /// between tabs; the name the user sees lives on that tab, not here.
+    pub tab: Mutex<TabId>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
@@ -88,7 +90,7 @@ impl Pane {
     pub fn spawn(
         id: PaneId,
         workspace: WorkspaceId,
-        name: String,
+        tab: TabId,
         cols: u16,
         rows: u16,
         cwd: Option<std::path::PathBuf>,
@@ -143,7 +145,7 @@ impl Pane {
         let pane = Arc::new(Self {
             id,
             workspace,
-            name: Mutex::new(name),
+            tab: Mutex::new(tab),
             master: Mutex::new(pty.master),
             writer: Mutex::new(writer),
             killer: Mutex::new(killer),
@@ -321,7 +323,7 @@ mod tests {
         let pane = Pane::spawn(
             PaneId::new(),
             WorkspaceId::new(),
-            "test".into(),
+            TabId::new(),
             80,
             24,
             None,
@@ -351,7 +353,7 @@ mod tests {
         let pane = Pane::spawn(
             PaneId::new(),
             WorkspaceId::new(),
-            "test".into(),
+            TabId::new(),
             80,
             24,
             None,

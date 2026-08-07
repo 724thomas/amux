@@ -14,6 +14,9 @@ interface Settings {
   showLastInput: boolean;
   /** Draggable position (px from the pane's top-left) of the last-command chip. */
   lastInputPos: { x: number; y: number };
+  /** Pin a prompt composer at the bottom of every pane (type without the
+   *  terminal auto-scrolling to the newest output). */
+  showComposer: boolean;
 }
 
 const DEFAULTS: Settings = {
@@ -23,6 +26,7 @@ const DEFAULTS: Settings = {
   notifHeight: 200,
   showLastInput: true,
   lastInputPos: { x: 8, y: 6 },
+  showComposer: true,
 };
 
 function load(): Settings {
@@ -72,6 +76,15 @@ export function setNotifHeight(px: number) {
 export function toggleShowLastInput() {
   settings.showLastInput = !settings.showLastInput;
   save();
+}
+
+export function setShowComposer(on: boolean) {
+  settings.showComposer = on;
+  save();
+}
+
+export function toggleShowComposer() {
+  setShowComposer(!(settings.showComposer ?? true));
 }
 
 /** Live position update while dragging the last-command chip (not persisted;
