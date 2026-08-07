@@ -3,6 +3,7 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 
 export type PaneId = string;
 export type WorkspaceId = string;
+export type TabId = string;
 export type SplitAxis = "horizontal" | "vertical";
 
 export interface PaneMeta {
@@ -29,10 +30,12 @@ export type PaneStatus =
   | "waiting"
   | "done";
 
+/// A pane has no name of its own — the tab it belongs to is the named unit,
+/// and every pane inside borrows that name (see `paneLabel` in state.svelte).
 export interface PaneInfo {
   id: PaneId;
   workspace: WorkspaceId;
-  name: string;
+  tab: TabId;
   meta: PaneMeta;
   notification: PaneNotification | null;
   status: PaneStatus;
@@ -49,16 +52,25 @@ export type LayoutNode =
       second: LayoutNode;
     };
 
-export interface WorkspaceInfo {
-  id: WorkspaceId;
+/// One tab = one named screen with its own split tree. Exactly one tab per
+/// workspace is on screen; the rest stay mounted and hidden.
+export interface TabInfo {
+  id: TabId;
   name: string;
   layout: LayoutNode;
   active_pane: PaneId | null;
 }
 
+export interface WorkspaceInfo {
+  id: WorkspaceId;
+  name: string;
+  tabs: TabInfo[];
+  active_tab: TabId | null;
+}
+
 export interface NotificationEntry {
   pane: PaneId;
-  pane_name: string;
+  tab_name: string;
   kind: PaneNotification["kind"];
   title: string | null;
   body: string | null;
@@ -91,8 +103,28 @@ export const renameWorkspace = (workspace: WorkspaceId, name: string) =>
 export const moveWorkspace = (workspace: WorkspaceId, index: number) =>
   invoke<void>("move_workspace", { workspace, index });
 
-export const setRatio = (workspace: WorkspaceId, path: boolean[], ratio: number) =>
-  invoke<void>("set_ratio", { workspace, path, ratio });
+/** `path` addresses a divider inside ONE tab's tree — the tab is not optional. */
+export const setRatio = (
+  workspace: WorkspaceId,
+  tab: TabId,
+  path: boolean[],
+  ratio: number,
+) => invoke<void>("set_ratio", { workspace, tab, path, ratio });
+
+// -- tabs -----------------------------------------------------------------------
+
+export const newTab = (workspace: WorkspaceId, name?: string, cols = 80, rows = 24) =>
+  invoke<TabId>("new_tab", { workspace, name: name ?? null, cols, rows });
+
+export const closeTab = (tab: TabId) => invoke<void>("close_tab", { tab });
+
+export const focusTab = (tab: TabId) => invoke<void>("focus_tab", { tab });
+
+export const renameTab = (tab: TabId, name: string) =>
+  invoke<void>("rename_tab", { tab, name });
+
+export const moveTab = (tab: TabId, index: number) =>
+  invoke<void>("move_tab", { tab, index });
 
 // -- panes ----------------------------------------------------------------------
 

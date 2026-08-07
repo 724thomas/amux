@@ -1,18 +1,46 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import Sidebar from "./lib/Sidebar.svelte";
   import SplitNode from "./lib/SplitNode.svelte";
   import Palette from "./lib/Palette.svelte";
   import Dashboard from "./lib/Dashboard.svelte";
-  import { app, initState, broadcast, palette, dashboard, activeWorkspacePaneCount } from "./lib/state.svelte";
+  import {
+    app,
+    initState,
+    broadcast,
+    palette,
+    dashboard,
+    activeTabPaneCount,
+    focusTerm,
+    tabHasBadge,
+    tabStatus,
+  } from "./lib/state.svelte";
+  import { closeTab, focusTab, moveTab, newTab, renameTab, type TabId } from "./lib/ipc";
   import { handleKey } from "./lib/keymap";
   import { setSidebarWidth, settings } from "./lib/settings.svelte";
   import { themeById } from "./lib/themes";
 
   const snapshot = $derived(app.snapshot);
-  const bcastCount = $derived(activeWorkspacePaneCount());
+  const bcastCount = $derived(activeTabPaneCount());
 
   let draggingSidebar = $state(false);
+
+  // Tab-bar interactions. Renaming is inline (double-click a tab); dragging a
+  // tab onto another reorders it, mirroring the sidebar's workspace drag.
+  let renamingTab = $state<TabId | null>(null);
+  let renameValue = $state("");
+  let draggedTab = $state<TabId | null>(null);
+
+  function startRenameTab(tab: TabId, name: string) {
+    renamingTab = tab;
+    renameValue = name;
+    void tick().then(() => document.querySelector<HTMLInputElement>(".tab-rename")?.select());
+  }
+
+  function commitRenameTab() {
+    if (renamingTab && renameValue.trim()) void renameTab(renamingTab, renameValue.trim());
+    renamingTab = null;
+  }
 
   onMount(() => {
     void initState();
@@ -41,7 +69,7 @@
     title="브로드캐스트 해제 (클릭 또는 Ctrl+Shift+B)"
   >
     <span class="bolt">⚡</span>
-    BROADCAST — 입력이 {bcastCount}개 pane에 동시 전송됩니다
+    BROADCAST — 입력이 이 탭의 {bcastCount}개 pane에 동시 전송됩니다
     <span class="hint">클릭 · Ctrl+Shift+B 해제</span>
   </button>
 {/if}
@@ -90,16 +118,85 @@
     ondblclick={() => setSidebarWidth(230)}
   ></div>
   <main class="main">
-    <!-- Every workspace stays mounted so its terminals keep their xterm
-         buffers; only the active one is displayed. -->
+    <!-- Every workspace AND every tab stays mounted so its terminals keep
+         their xterm buffers and their agents keep running; only the active
+         one is displayed. Never unmount — `display: none` only. -->
     {#each snapshot?.workspaces ?? [] as ws (ws.id)}
-      <div class="workspace" class:hidden={ws.id !== snapshot?.active_workspace}>
-        <SplitNode
-          node={ws.layout}
-          workspace={ws.id}
-          activePane={ws.active_pane}
-          visible={ws.id === snapshot?.active_workspace}
-        />
+      {@const wsVisible = ws.id === snapshot?.active_workspace}
+      <div class="workspace" class:hidden={!wsVisible}>
+        <div class="tabbar">
+          {#each ws.tabs as tab, index (tab.id)}
+            {@const on = tab.id === ws.active_tab}
+            <div
+              class="tab"
+              class:on
+              data-status={tabStatus(tab) ?? "idle"}
+              role="tab"
+              tabindex="-1"
+              aria-selected={on}
+              draggable={renamingTab !== tab.id}
+              onclick={() => {
+                void focusTab(tab.id);
+                focusTerm(tab.active_pane);
+              }}
+              ondblclick={() => startRenameTab(tab.id, tab.name)}
+              onauxclick={(e) => {
+                if (e.button === 1) void closeTab(tab.id); // middle-click closes
+              }}
+              onkeydown={() => {}}
+              ondragstart={() => (draggedTab = tab.id)}
+              ondragover={(e) => e.preventDefault()}
+              ondrop={(e) => {
+                e.preventDefault();
+                if (draggedTab) void moveTab(draggedTab, index);
+                draggedTab = null;
+              }}
+            >
+              <span class="dot"></span>
+              {#if renamingTab === tab.id}
+                <input
+                  class="tab-rename"
+                  bind:value={renameValue}
+                  onblur={commitRenameTab}
+                  onclick={(e) => e.stopPropagation()}
+                  ondblclick={(e) => e.stopPropagation()}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter") commitRenameTab();
+                    if (e.key === "Escape") renamingTab = null;
+                    e.stopPropagation();
+                  }}
+                />
+              {:else}
+                <span class="tab-name">{tab.name}</span>
+                {#if tabHasBadge(tab)}<span class="tab-badge"></span>{/if}
+                <button
+                  class="tab-close"
+                  title="탭 닫기 (Ctrl+W)"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    void closeTab(tab.id);
+                  }}>×</button
+                >
+              {/if}
+            </div>
+          {/each}
+          <button class="tab-add" title="새 탭 (Ctrl+T)" onclick={() => void newTab(ws.id)}>
+            +
+          </button>
+        </div>
+        <div class="tab-body">
+          {#each ws.tabs as tab (tab.id)}
+            <div class="tab-panel" class:hidden={tab.id !== ws.active_tab}>
+              <SplitNode
+                node={tab.layout}
+                workspace={ws.id}
+                tab={tab.id}
+                activePane={tab.active_pane}
+                visible={wsVisible && tab.id === ws.active_tab}
+              />
+            </div>
+          {/each}
+        </div>
       </div>
     {/each}
   </main>
@@ -135,8 +232,137 @@
   .workspace {
     position: absolute;
     inset: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
   .workspace.hidden {
+    display: none;
+  }
+
+  /* Tab bar — one row per workspace, above its terminals. A tab is the named
+     unit here; the split tree lives inside it. */
+  .tabbar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: stretch;
+    gap: 2px;
+    padding: 4px 6px 0;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+  /* Tabs share the bar's full width instead of hugging their text: `flex: 1 1 0`
+     gives every tab an equal slice of whatever is left over. `min-width` is the
+     floor — once enough tabs exist that they'd go below it, they stop shrinking
+     and the bar scrolls instead. */
+  .tab {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1 1 0;
+    min-width: 120px;
+    padding: 6px 10px 6px 12px;
+    font-size: 0.78rem;
+    color: var(--muted);
+    background: color-mix(in srgb, var(--text) 6%, transparent);
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 7px 7px 0 0;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  .tab:hover {
+    background: color-mix(in srgb, var(--text) 11%, transparent);
+  }
+  .tab.on {
+    color: var(--text);
+    background: var(--surface-3);
+    border-color: var(--border);
+    box-shadow: inset 0 2px 0 var(--accent);
+  }
+  /* The name takes the slack between the status dot and the close button, so a
+     wide tab reads centred rather than with the text stuck to the left edge. */
+  .tab-name {
+    flex: 1;
+    min-width: 0;
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* Status colour = the most attention-hungry pane inside the tab. */
+  .tab .dot {
+    width: 7px;
+    height: 7px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .tab[data-status="processing"] .dot {
+    background: var(--red);
+  }
+  .tab[data-status="processed"] .dot {
+    background: var(--green);
+  }
+  .tab[data-status="waiting"] .dot {
+    background: var(--yellow);
+  }
+  .tab[data-status="done"] .dot {
+    background: var(--done);
+  }
+  .tab-badge {
+    width: 6px;
+    height: 6px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--info);
+  }
+  .tab-close,
+  .tab-add {
+    flex-shrink: 0;
+    padding: 0 4px;
+    font-size: 0.95rem;
+    line-height: 1;
+    color: var(--muted);
+    background: none;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .tab-close:hover,
+  .tab-add:hover {
+    color: var(--text);
+    background: color-mix(in srgb, var(--text) 16%, transparent);
+  }
+  .tab-add {
+    align-self: center;
+    padding: 2px 8px;
+    font-size: 1rem;
+  }
+  .tab-rename {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    font: inherit;
+    text-align: center;
+    color: var(--text);
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--accent);
+    outline: none;
+  }
+  .tab-body {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+  }
+  .tab-panel {
+    position: absolute;
+    inset: 0;
+  }
+  .tab-panel.hidden {
     display: none;
   }
 

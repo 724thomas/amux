@@ -1,6 +1,6 @@
 <script lang="ts">
   // Hosts one xterm.js instance bound to one engine pane.
-  import { onMount } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
   import { WebglAddon } from "@xterm/addon-webgl";
@@ -12,9 +12,21 @@
   import "@xterm/xterm/css/xterm.css";
   import { writePane, resizePane, subscribePane, type PaneId } from "./ipc";
   import { handleKey } from "./keymap";
-  import { adjustFontSize, settings, setLastInputPos, saveSettings } from "./settings.svelte";
+  import {
+    adjustFontSize,
+    settings,
+    setLastInputPos,
+    saveSettings,
+    setShowComposer,
+  } from "./settings.svelte";
   import { themeById } from "./themes";
-  import { paneInfo, registerTermFocus, broadcast, broadcastTargets } from "./state.svelte";
+  import {
+    paneInfo,
+    registerTermFocus,
+    registerComposerFocus,
+    broadcast,
+    broadcastTargets,
+  } from "./state.svelte";
 
   export interface MenuAction {
     label: string;
@@ -169,6 +181,155 @@
       i += 1;
     }
   }
+
+  // ── 하단 고정 입력창 (Composer) ────────────────────────────────────────
+  // 문제: 긴 출력을 위로 스크롤해 읽는 도중 다음 프롬프트를 타이핑하면 화면이
+  // 매 키 입력마다 맨 아래로 튄다. xterm이 "사용자 입력 = 최신 출력을 봐야
+  // 한다"고 보고 강제로 스크롤하기 때문(scrollOnUserInput). 반대로 *출력*은
+  // 스크롤을 건드리지 않는다 — 읽던 자리는 그대로 유지된다.
+  // 해결: pane 맨 아래에 터미널과 분리된 입력칸을 붙인다. 여기 타이핑하는
+  // 동안 xterm은 아무 입력도 받지 않으므로 스크롤 위치가 그대로 있고, Enter를
+  // 누르는 순간에만 텍스트가 PTY로 한 번에 들어간다.
+  // 자리 차지 방식: 쉴 때 높이만큼만 레이아웃에서 자리를 차지(.composer-slot)
+  // 하고, 길어질 때는 터미널 위로 겹쳐 자란다. 타이핑 중 PTY 리사이즈가
+  // 반복되면 TUI가 계속 다시 그려져 어지럽기 때문.
+  const composerOn = $derived(settings.showComposer ?? true);
+  let draft = $state("");
+  let composerH = $state(0); // live height (grows with the draft)
+  let restH = $state(0); // height while empty — that's what the slot reserves
+  let ta = $state<HTMLTextAreaElement>();
+  let composerFocused = $state(false);
+
+  // Grow the box with its content, up to ~45% of the pane; then scroll inside.
+  function autosize() {
+    if (!ta) return;
+    const max = Math.max(80, Math.round((host?.clientHeight ?? 400) * 0.45));
+    ta.style.height = "auto";
+    // +2: box-sizing is border-box app-wide, but scrollHeight excludes borders.
+    ta.style.height = Math.min(ta.scrollHeight + 2, max) + "px";
+  }
+
+  /** Send the draft to this pane's PTY. `submit` also presses Enter. */
+  async function sendDraft(submit: boolean) {
+    const text = draft.replace(/\r\n?/g, "\n").replace(/\s+$/, "");
+    if (!text) return;
+
+    // 여러 줄은 bracketed paste로 감싼다: 안 그러면 줄바꿈마다 Enter로 읽혀
+    // 한 줄씩 제출돼 버린다. 한 줄이면 그냥 타이핑한 것과 똑같은 바이트를 보낸다.
+    const body = text.replace(/\n/g, "\r");
+    const multi = text.includes("\n");
+    const bracketed = multi && term?.modes.bracketedPasteMode === true;
+    const payload = multi ? (bracketed ? `\x1b[200~${body}\x1b[201~` : body) : body;
+    // Broadcast mode mirrors the composer just like it mirrors typing.
+    const targets = broadcast.on && focused ? broadcastTargets(pane) : [];
+
+    // 첫 write가 실패하면(pane 종료 등) 작성 중이던 글이 사라지지 않도록
+    // draft는 전송이 확인된 뒤에만 비운다.
+    const head = !multi && submit ? body + "\r" : payload;
+    try {
+      await writePane(pane, head);
+    } catch {
+      return;
+    }
+    for (const target of targets) void writePane(target, head);
+    if (multi && submit) {
+      // 붙여넣기 블록을 앱(Claude Code 등)이 먼저 소화하도록 Enter는 한 박자 뒤.
+      setTimeout(() => {
+        void writePane(pane, "\r");
+        for (const target of targets) void writePane(target, "\r");
+      }, 40);
+    }
+
+    draft = "";
+    await tick();
+    autosize();
+    if (submit) {
+      inputBuf = text; // feed the last-command chip, same as typed input
+      commitLine();
+    }
+    // 보낸 뒤에는 결과를 봐야 하니 맨 아래로. (튀는 게 싫었던 건 "타이핑 중"이지
+    // "보낸 뒤"가 아니다.)
+    term?.scrollToBottom();
+    ta?.focus();
+  }
+
+  // 입력칸이 비어 있을 때, "한 글자씩 반응하는 UI"로 가야 하는 키는 터미널로
+  // 넘긴다. `/`를 누르면 Claude Code가 슬래시 명령 자동완성을 띄우고, 옵션
+  // 메뉴는 ↑↓로 고르고, Tab은 모드를 바꾼다 — 이런 건 입력칸에서 문장을
+  // 조립해 한 번에 보내는 방식으로는 쓸 수가 없다. 그래서 그 순간 포커스를
+  // 터미널로 옮기고 누른 키를 그대로 흘려보낸다(= 원래 터미널에 친 것과 동일).
+  const HANDOFF_PREFIX = ["/", "!", "#", "@"];
+
+  function handOff(data: string) {
+    void writePane(pane, data);
+    if (broadcast.on && focused) {
+      for (const target of broadcastTargets(pane)) void writePane(target, data);
+    }
+    // 포커스 이동은 이 키 이벤트가 끝난 뒤로 미룬다. keydown 도중에 xterm의
+    // 숨은 textarea로 포커스를 옮기면 이어지는 keypress를 xterm이 받아 같은
+    // 글자를 PTY에 한 번 더 보낼 수 있다("//"). preventDefault로도 대개 막히지만,
+    // 위 Shift+Enter 주석의 그 함정과 같은 계열이라 순서로 아예 차단한다.
+    setTimeout(() => term?.focus(), 0);
+  }
+
+  function composerKey(e: KeyboardEvent) {
+    // 한글/일본어 IME 조합 중의 Enter는 "글자 확정"이지 전송이 아니다.
+    // 이 가드가 없으면 "안녕"을 확정하는 Enter가 그대로 전송돼 버린다.
+    if (e.isComposing || e.keyCode === 229) return;
+
+    if (draft === "" && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      if (e.key.length === 1 && HANDOFF_PREFIX.includes(e.key)) {
+        e.preventDefault();
+        handOff(e.key);
+        return;
+      }
+      if (!e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        e.preventDefault();
+        handOff(e.key === "ArrowUp" ? "\x1b[A" : "\x1b[B");
+        return;
+      }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        handOff(e.shiftKey ? "\x1b[Z" : "\t");
+        return;
+      }
+    }
+
+    if (e.key === "Enter" && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      void sendDraft(!e.ctrlKey); // Ctrl+Enter: 넣기만 하고 제출은 안 함
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      term?.focus();
+    }
+  }
+
+  // 엔진의 `waiting` = 턴 진행 중 Claude가 권한/선택을 묻는 순간 (턴이 끝난 뒤의
+  // 유휴 "입력 기다림" 알림은 엔진이 걸러낸다). 즉 키보드가 입력칸이 아니라
+  // 터미널에 있어야 하는 바로 그 시점.
+  const waitingInput = $derived(paneInfo(pane)?.status === "waiting");
+  let prevWaiting = false;
+  $effect(() => {
+    const w = waitingInput;
+    // 전환(false→true) 시에만, 그리고 쓰던 글이 없을 때만 넘긴다. 작성 중이면
+    // 절대 뺏지 않는다 — 반쯤 쓴 프롬프트가 TUI로 새어 들어가면 안 되니까.
+    if (w && !prevWaiting && untrack(() => composerFocused && draft === "")) {
+      term?.focus();
+    }
+    prevWaiting = w;
+  });
+
+  // 빈 상태의 높이 = 레이아웃에서 예약할 높이. 글꼴 크기가 바뀌면 자동으로 갱신.
+  $effect(() => {
+    if (draft === "" && composerH > 0) restH = composerH;
+  });
+  $effect(() => {
+    void settings.fontSize;
+    void composerOn;
+    void tick().then(autosize);
+  });
 
   // ── Activity widgets ──────────────────────────────────────────────────
   // Two visualizers of the SAME signal — this pane's output byte-rate (never
@@ -595,9 +756,25 @@
     observer.observe(host);
     doFit();
     if (focused) term.focus();
-    const unregisterFocus = registerTermFocus(pane, () => term.focus());
+    // Don't yank the keyboard out of the composer: focusTerm() fires on every
+    // active-pane change (snapshot listener, palette close, sidebar click), and
+    // clicking this pane's composer is exactly such a change.
+    const unregisterFocus = registerTermFocus(pane, () => {
+      if (!composerFocused) term.focus();
+    });
+    const unregisterComposer = registerComposerFocus(pane, () => {
+      if (!composerOn) {
+        setShowComposer(true);
+        void tick().then(() => ta?.focus());
+      } else if (composerFocused) {
+        term.focus();
+      } else {
+        ta?.focus();
+      }
+    });
 
     return () => {
+      unregisterComposer();
       unregisterFocus();
       observer.disconnect();
       cancelAnimationFrame(waveRaf);
@@ -607,7 +784,9 @@
   });
 
   $effect(() => {
-    if (focused && term) term.focus();
+    // untrack: 입력창에서 포커스가 *빠질* 때 이 effect가 다시 돌아 터미널로
+    // 포커스를 뺏어오면 안 된다(예: 사이드바 입력창을 클릭한 경우).
+    if (focused && term && !untrack(() => composerFocused)) term.focus();
   });
 
   // Live font-size changes: update xterm, then refit cols/rows to the host.
@@ -673,6 +852,9 @@
 
 <svelte:window onclick={() => (menu = null)} />
 
+<!-- 터미널 + 하단 입력창을 세로로 쌓는 스택. 입력창을 켜면 터미널이 그만큼
+     짧아지므로(PTY도 함께 리사이즈) 가려지는 내용이 없다. -->
+<div class="term-stack" style="--cfs: {settings.fontSize}px; --clh: {Math.round(settings.fontSize * 1.45)}px">
 <div
   class="terminal-host"
   role="application"
@@ -702,6 +884,41 @@
     e.stopPropagation();
   }}
 ></div>
+  {#if composerOn}
+    <!-- 레이아웃에서 자리를 예약하는 빈 칸. 높이는 "입력창이 비었을 때의 실제
+         높이"를 그대로 쓰므로 글꼴 크기가 바뀌어도 자동으로 맞는다. -->
+    <div class="composer-slot" style="height: {restH}px"></div>
+    <div
+      class="composer"
+      class:active={composerFocused}
+      class:waiting={waitingInput}
+      bind:offsetHeight={composerH}
+    >
+      <textarea
+        bind:this={ta}
+        bind:value={draft}
+        rows="2"
+        spellcheck="false"
+        placeholder={waitingInput
+          ? "⌨ 터미널이 선택을 기다립니다 — 위쪽 화면에서 응답하세요"
+          : "프롬프트 입력 — Enter 전송 · / 는 터미널로"}
+        title="Enter 전송 · Shift+Enter 줄바꿈 · Ctrl+Enter 제출 없이 입력만 · Esc 터미널로 (Ctrl+Shift+E 로 오가기)
+빈 칸에서 / ! # @ 와 ↑ ↓ Tab 은 터미널로 바로 넘어갑니다 (슬래시 명령 자동완성 · 옵션 선택)"
+        oninput={autosize}
+        onkeydown={composerKey}
+        onfocus={() => (composerFocused = true)}
+        onblur={() => (composerFocused = false)}
+      ></textarea>
+      <button
+        class="send"
+        title="전송 (Enter)"
+        disabled={draft.trim() === ""}
+        onmousedown={(e) => e.preventDefault()}
+        onclick={() => void sendDraft(true)}>⏎</button
+      >
+    </div>
+  {/if}
+</div>
 
 {#if settings.showLastInput && lastInput}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -770,10 +987,95 @@
 {/if}
 
 <style>
-  .terminal-host {
-    width: 100%;
-    height: 100%;
+  .term-stack {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
     background: var(--bg);
+  }
+  .terminal-host {
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 0;
+    background: var(--bg);
+  }
+  /* 하단 고정 입력창 — 터미널과 완전히 분리된 입력칸이라 여기 타이핑해도
+     xterm의 스크롤 위치가 움직이지 않는다. 쉴 때 높이만 slot이 예약하고,
+     길어지면 터미널 위로 겹쳐 자란다(타이핑 중 PTY 리사이즈 방지). */
+  .composer-slot {
+    flex: 0 0 auto;
+  }
+  .composer {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 8;
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    padding: 5px 6px;
+    background: var(--surface-2);
+    border-top: 1px solid var(--border-2);
+  }
+  .composer.active {
+    border-top-color: var(--accent);
+  }
+  /* Claude가 권한/선택을 묻는 중 — 키보드는 터미널 차례라는 신호. */
+  .composer.waiting {
+    border-top-color: var(--yellow);
+    background: color-mix(in srgb, var(--yellow) 8%, var(--surface-2));
+  }
+  .composer.waiting textarea::placeholder {
+    color: var(--yellow);
+  }
+  .composer textarea {
+    flex: 1;
+    min-width: 0;
+    /* 쉴 때 항상 2줄 — autosize가 언제 돌든 예약 높이가 흔들리지 않는다. */
+    min-height: calc(2 * var(--clh) + 8px);
+    padding: 3px 6px;
+    font-family: monospace;
+    font-size: var(--cfs);
+    line-height: var(--clh);
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border-2);
+    border-radius: 5px;
+    resize: none;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    /* body가 user-select:none이라 상속되면 입력 텍스트 선택이 막힌다. */
+    user-select: text;
+  }
+  .composer textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .composer textarea::placeholder {
+    color: var(--muted);
+  }
+  .composer .send {
+    flex-shrink: 0;
+    width: 28px;
+    height: 26px;
+    color: var(--text);
+    background: none;
+    border: 1px solid var(--border-2);
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    line-height: 1;
+  }
+  .composer .send:hover:not(:disabled) {
+    background: var(--accent);
+    color: var(--bg);
+  }
+  .composer .send:disabled {
+    opacity: 0.35;
+    cursor: default;
   }
   /* Last-command chip — the user's most recent submitted command, floating
      inside the pane as a draggable chip. Overlay only (never resizes the PTY).

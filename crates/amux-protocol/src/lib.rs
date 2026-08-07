@@ -44,6 +44,7 @@ macro_rules! id_type {
 
 id_type!(PaneId, "p");
 id_type!(WorkspaceId, "w");
+id_type!(TabId, "t");
 
 // ---------------------------------------------------------------------------
 // Snapshot (engine state mirrored to the frontend / returned by the socket)
@@ -129,30 +130,47 @@ pub struct PaneMeta {
     pub kitty_keyboard: bool,
 }
 
+/// A pane carries no name of its own: the *tab* is the named unit the user
+/// sees and renames, and every pane inside it borrows that name (with an
+/// ordinal suffix when the tab is split into more than one pane).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaneInfo {
     pub id: PaneId,
     pub workspace: WorkspaceId,
-    pub name: String,
+    /// Which tab's split tree this pane is a leaf of. Broadcast, visibility
+    /// and labelling are all scoped by this.
+    pub tab: TabId,
     pub meta: PaneMeta,
     pub notification: Option<PaneNotification>,
     pub status: PaneStatus,
     pub exited: bool,
 }
 
+/// One tab: a named screen holding its own split tree. Exactly one tab per
+/// workspace is on screen at a time; the rest stay alive and hidden.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TabInfo {
+    pub id: TabId,
+    pub name: String,
+    pub layout: LayoutNode,
+    pub active_pane: Option<PaneId>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceInfo {
     pub id: WorkspaceId,
     pub name: String,
-    pub layout: LayoutNode,
-    pub active_pane: Option<PaneId>,
+    /// Tab-bar order.
+    pub tabs: Vec<TabInfo>,
+    pub active_tab: Option<TabId>,
 }
 
 /// One entry in the notification history (sidebar bottom panel).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotificationEntry {
     pub pane: PaneId,
-    pub pane_name: String,
+    /// Name of the tab the pane belongs to (panes have no name of their own).
+    pub tab_name: String,
     pub kind: NotifyKind,
     pub title: Option<String>,
     pub body: Option<String>,
@@ -298,7 +316,36 @@ pub mod methods {
     #[derive(Debug, Serialize, Deserialize)]
     pub struct WorkspaceCreateResult {
         pub workspace: String,
+        pub tab: String,
         pub pane: String,
+    }
+
+    /// `tab` accepts a full UUID or a short prefix (`t-3fa2c1` / `3fa2c1`).
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct TabRefParams {
+        pub tab: String,
+    }
+
+    /// Open a tab. Every field is optional — `workspace` defaults to the active
+    /// one and `name` to `탭 N` — so `amux tab new` can be called bare.
+    #[derive(Debug, Default, Serialize, Deserialize)]
+    pub struct TabNewParams {
+        #[serde(default)]
+        pub workspace: Option<String>,
+        #[serde(default)]
+        pub name: Option<String>,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct TabNewResult {
+        pub tab: String,
+        pub pane: String,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct TabRenameParams {
+        pub tab: String,
+        pub name: String,
     }
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -340,6 +387,8 @@ pub mod methods {
         pub text: String,
     }
 
+    /// Kept for script compatibility: panes have no name, so this renames the
+    /// tab the pane lives in.
     #[derive(Debug, Serialize, Deserialize)]
     pub struct PaneRenameParams {
         pub pane: String,

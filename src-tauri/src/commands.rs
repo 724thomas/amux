@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use amux_core::Engine;
-use amux_protocol::{PaneId, Snapshot, SplitAxis, WorkspaceId};
+use amux_protocol::{PaneId, Snapshot, SplitAxis, TabId, WorkspaceId};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::State;
 
@@ -27,7 +27,7 @@ pub fn create_workspace(
 ) -> Result<WorkspaceId, String> {
     engine
         .create_workspace(name, None, cols, rows)
-        .map(|(ws, _)| ws)
+        .map(|(ws, _tab, _pane)| ws)
         .map_err(err)
 }
 
@@ -59,14 +59,53 @@ pub fn move_workspace(
     engine.move_workspace(workspace, index).map_err(err)
 }
 
+/// `path` walks the split tree of one *tab*, so the tab has to come along —
+/// the same path means a different divider in a different tab.
 #[tauri::command]
 pub fn set_ratio(
     engine: Eng<'_>,
     workspace: WorkspaceId,
+    tab: TabId,
     path: Vec<bool>,
     ratio: f32,
 ) -> Result<(), String> {
-    engine.set_ratio(workspace, &path, ratio).map_err(err)
+    engine.set_ratio(workspace, tab, &path, ratio).map_err(err)
+}
+
+// -- tabs ---------------------------------------------------------------------
+
+#[tauri::command]
+pub fn new_tab(
+    engine: Eng<'_>,
+    workspace: WorkspaceId,
+    name: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> Result<TabId, String> {
+    engine
+        .new_tab(workspace, name, cols, rows)
+        .map(|(tab, _pane)| tab)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub fn close_tab(engine: Eng<'_>, tab: TabId) -> Result<(), String> {
+    engine.close_tab(tab).map_err(err)
+}
+
+#[tauri::command]
+pub fn focus_tab(engine: Eng<'_>, tab: TabId) -> Result<(), String> {
+    engine.focus_tab(tab).map_err(err)
+}
+
+#[tauri::command]
+pub fn rename_tab(engine: Eng<'_>, tab: TabId, name: String) -> Result<(), String> {
+    engine.rename_tab(tab, name).map_err(err)
+}
+
+#[tauri::command]
+pub fn move_tab(engine: Eng<'_>, tab: TabId, index: usize) -> Result<(), String> {
+    engine.move_tab(tab, index).map_err(err)
 }
 
 // -- panes --------------------------------------------------------------------

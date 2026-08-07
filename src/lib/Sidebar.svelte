@@ -1,26 +1,45 @@
 <script lang="ts">
-  // Vertical list: workspaces with their terminals nested beneath
-  // (워크스페이스 1 → 터미널 1, 터미널 2 ...). Mouse-first: click to switch,
-  // drag to reorder workspaces, right-click to rename/close, port chips
-  // open the browser, + creates a workspace. The bottom panel is the
-  // "지금 봐야 할 에이전트" triage list (손길 필요한 pane 우선순위).
+  // Vertical list: workspaces with their tabs nested beneath
+  // (워크스페이스 1 → 탭 1, 탭 2 ...). A tab is the named unit — the panes
+  // split inside it are shown in the tab bar above the terminals, not here.
+  // Mouse-first: click to switch, drag to reorder workspaces, right-click to
+  // rename/close, port chips open the browser, + creates a workspace. The
+  // bottom panel is the "지금 봐야 할 에이전트" triage list.
   import { openUrl } from "@tauri-apps/plugin-opener";
   import {
-    closePane,
+    closeTab,
     closeWorkspace,
     createWorkspace,
     focusPane,
+    focusTab,
     focusWorkspace,
     moveWorkspace,
-    renamePane,
+    renameTab,
     renameWorkspace,
-    type LayoutNode,
-    type PaneId,
+    type TabId,
+    type TabInfo,
     type WorkspaceId,
     type WorkspaceInfo,
   } from "./ipc";
-  import { app, attentionItems, clock, focusTerm, paneInfo, wsCreate } from "./state.svelte";
-  import { adjustFontSize, setNotifHeight, setTheme, settings, toggleShowLastInput } from "./settings.svelte";
+  import {
+    app,
+    attentionItems,
+    clock,
+    focusTerm,
+    paneInfo,
+    tabHasBadge,
+    tabPanes,
+    tabStatus,
+    wsCreate,
+  } from "./state.svelte";
+  import {
+    adjustFontSize,
+    setNotifHeight,
+    setTheme,
+    settings,
+    toggleShowLastInput,
+    toggleShowComposer,
+  } from "./settings.svelte";
   import { THEMES, themeById } from "./themes";
 
   const snapshot = $derived(app.snapshot);
@@ -39,11 +58,11 @@
 
   type MenuTarget =
     | { kind: "workspace"; id: WorkspaceId; name: string }
-    | { kind: "pane"; id: PaneId; name: string };
+    | { kind: "tab"; id: TabId; name: string };
 
   let menu = $state<{ x: number; y: number; target: MenuTarget } | null>(null);
   let themeMenuOpen = $state(false);
-  let renaming = $state<{ kind: "workspace" | "pane"; id: string } | null>(null);
+  let renaming = $state<{ kind: "workspace" | "tab"; id: string } | null>(null);
   let renameValue = $state("");
   let draggedId = $state<WorkspaceId | null>(null);
 
@@ -73,10 +92,12 @@
     newWsName = "";
   }
 
-  function layoutPanes(node: LayoutNode): PaneId[] {
-    return node.type === "leaf"
-      ? [node.pane]
-      : [...layoutPanes(node.first), ...layoutPanes(node.second)];
+  /// Branch / cwd shown on a tab row come from the pane the tab is focused on
+  /// — with one pane that IS the tab, and with a split it is the one the user
+  /// last touched, which is the useful one to surface.
+  function tabDetail(tab: TabInfo): { branch: string | null; cwd: string | null } {
+    const pane = paneInfo(tab.active_pane ?? tabPanes(tab)[0] ?? "");
+    return { branch: pane?.meta.git_branch ?? null, cwd: pane?.meta.cwd ?? null };
   }
 
   function wsPorts(ws: WorkspaceInfo): number[] {
@@ -110,7 +131,7 @@
     if (renaming && renameValue.trim()) {
       const name = renameValue.trim();
       if (renaming.kind === "workspace") void renameWorkspace(renaming.id, name);
-      else void renamePane(renaming.id, name);
+      else void renameTab(renaming.id, name);
     }
     renaming = null;
   }
@@ -118,7 +139,7 @@
   function closeTarget(target: MenuTarget) {
     menu = null;
     if (target.kind === "workspace") void closeWorkspace(target.id);
-    else void closePane(target.id);
+    else void closeTab(target.id);
   }
 
   // Live mm:ss since the status began, for the attention rows.
@@ -174,8 +195,8 @@
           onclick={() => {
             void focusWorkspace(ws.id);
             // Already-active workspace: no snapshot change will arrive, so
-            // hand the keyboard to its terminal right now.
-            focusTerm(ws.active_pane);
+            // hand the keyboard to the visible tab's terminal right now.
+            focusTerm(ws.tabs.find((t) => t.id === ws.active_tab)?.active_pane);
           }}
           oncontextmenu={(e) => openMenu(e, { kind: "workspace", id: ws.id, name: ws.name })}
           ondragstart={() => (draggedId = ws.id)}
@@ -212,41 +233,44 @@
           {/if}
         </button>
         <ul class="panes">
-          {#each layoutPanes(ws.layout) as paneId (paneId)}
-            {@const pane = paneInfo(paneId)}
+          {#each ws.tabs as tab (tab.id)}
+            {@const status = tabStatus(tab)}
+            {@const detail = tabDetail(tab)}
+            {@const paneCount = tabPanes(tab).length}
             <li>
               <button
                 class="pane-entry"
-                class:active={isActiveWs && paneId === ws.active_pane}
+                class:active={isActiveWs && tab.id === ws.active_tab}
                 onclick={() => {
-                  void focusPane(paneId);
-                  focusTerm(paneId);
+                  void focusTab(tab.id);
+                  focusTerm(tab.active_pane);
                 }}
-                oncontextmenu={(e) =>
-                  openMenu(e, { kind: "pane", id: paneId, name: pane?.name ?? "" })}
+                oncontextmenu={(e) => openMenu(e, { kind: "tab", id: tab.id, name: tab.name })}
               >
-                {#if renaming?.kind === "pane" && renaming.id === paneId}
+                {#if renaming?.kind === "tab" && renaming.id === tab.id}
                   {@render renameInput()}
                 {:else}
                   <span class="pane-name">
-                    {pane?.name ?? "터미널"}
-                    {#if pane}
-                      <span class="status {pane.status}">
-                        {#if pane.status === "processing"}
+                    {tab.name}
+                    <!-- A split tab holds more than one terminal; say how many
+                         so the single status chip isn't read as the whole story. -->
+                    {#if paneCount > 1}<span class="split-count">◫{paneCount}</span>{/if}
+                    {#if status}
+                      <span class="status {status}">
+                        {#if status === "processing"}
                           {"processing" + ".".repeat(dots)}
-                        {:else if pane.status === "done"}
+                        {:else if status === "done"}
                           DONE
                         {:else}
-                          {pane.status}
+                          {status}
                         {/if}
                       </span>
                     {/if}
-                    {#if pane?.notification}<span class="badge"></span>{/if}
+                    {#if tabHasBadge(tab)}<span class="badge"></span>{/if}
                   </span>
                   <span class="pane-detail">
-                    {#if pane?.meta.git_branch}<span class="branch">⎇ {pane.meta.git_branch}</span
-                      >{/if}
-                    <span class="cwd">{shortCwd(pane?.meta.cwd ?? null)}</span>
+                    {#if detail.branch}<span class="branch">⎇ {detail.branch}</span>{/if}
+                    <span class="cwd">{shortCwd(detail.cwd)}</span>
                   </span>
                 {/if}
               </button>
@@ -374,6 +398,25 @@
       <span class="knob"></span>
     </button>
   </div>
+
+  <!-- 하단 고정 입력창 토글 — pane 아래에 프롬프트 작성칸을 붙여, 출력을
+       스크롤해 읽는 중에도 화면이 맨 아래로 튀지 않게 한다. -->
+  <div
+    class="toggle-control"
+    title="pane 아래에 프롬프트 입력칸 고정 (Ctrl+Shift+E 로 입력칸↔터미널 이동) — 여기 타이핑하면 터미널 스크롤이 움직이지 않습니다"
+  >
+    <span class="font-label">하단 입력창</span>
+    <button
+      class="switch"
+      class:on={settings.showComposer ?? true}
+      role="switch"
+      aria-checked={settings.showComposer ?? true}
+      aria-label="하단 입력창 토글"
+      onclick={toggleShowComposer}
+    >
+      <span class="knob"></span>
+    </button>
+  </div>
 </nav>
 
 {#if menu}
@@ -381,7 +424,7 @@
   <div class="ctx-menu" style="left: {menu.x}px; top: {menu.y}px">
     <button onclick={() => startRename(target)}>이름 변경</button>
     <button onclick={() => closeTarget(target)}>
-      {target.kind === "workspace" ? "워크스페이스 닫기" : "터미널 닫기"}
+      {target.kind === "workspace" ? "워크스페이스 닫기" : "탭 닫기"}
     </button>
   </div>
 {/if}
@@ -595,6 +638,15 @@
     border-radius: 8px;
     flex-shrink: 0;
     font-weight: 600;
+  }
+  /* "이 탭 안에 터미널이 N개" — split tabs only. */
+  .split-count {
+    flex-shrink: 0;
+    padding: 0 4px;
+    font-size: 0.65rem;
+    color: var(--muted);
+    background: color-mix(in srgb, var(--text) 8%, transparent);
+    border-radius: 6px;
   }
   .status.processing {
     color: var(--red);

@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use amux_protocol::{
-    methods::*, rpc_codes, PaneId, RpcRequest, RpcResponse, WorkspaceId,
+    methods::*, rpc_codes, PaneId, RpcRequest, RpcResponse, TabId, WorkspaceId,
 };
 use interprocess::local_socket::{
     tokio::{prelude::*, Stream},
@@ -124,6 +124,11 @@ fn error_code(e: &RpcDispatchError) -> i64 {
 }
 
 fn parse<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, RpcDispatchError> {
+    // A method whose fields are all optional should be callable with no params
+    // at all (`amux tab new`), but serde refuses to build a struct from `null`.
+    // Treat a missing params object as an empty one and let the field defaults
+    // do their job; methods with required fields still fail as before.
+    let params = if params.is_null() { Value::Object(Default::default()) } else { params };
     serde_json::from_value(params).map_err(RpcDispatchError::InvalidParams)
 }
 
@@ -141,6 +146,22 @@ fn resolve_pane(engine: &Engine, reference: &str) -> Result<PaneId, RpcDispatchE
         [one] => Ok(*one),
         [] => Err(RpcDispatchError::UnknownId(reference.into())),
         _ => Err(RpcDispatchError::Other(format!("ambiguous pane id: {reference}"))),
+    }
+}
+
+fn resolve_tab(engine: &Engine, reference: &str) -> Result<TabId, RpcDispatchError> {
+    let needle = reference.strip_prefix("t-").unwrap_or(reference).replace('-', "");
+    let snapshot = engine.snapshot();
+    let matches: Vec<TabId> = snapshot
+        .workspaces
+        .iter()
+        .flat_map(|w| w.tabs.iter().map(|t| t.id))
+        .filter(|id| id.0.simple().to_string().starts_with(&needle.to_lowercase()))
+        .collect();
+    match matches.as_slice() {
+        [one] => Ok(*one),
+        [] => Err(RpcDispatchError::UnknownId(reference.into())),
+        _ => Err(RpcDispatchError::Other(format!("ambiguous tab id: {reference}"))),
     }
 }
 
@@ -172,10 +193,11 @@ fn dispatch(
 
         "workspace.create" => {
             let p: WorkspaceCreateParams = parse(params)?;
-            let (ws, pane) =
+            let (ws, tab, pane) =
                 engine.create_workspace(p.name, p.cwd.map(Into::into), 80, 24)?;
             Ok(serde_json::to_value(WorkspaceCreateResult {
                 workspace: ws.to_string(),
+                tab: tab.to_string(),
                 pane: pane.to_string(),
             })
             .unwrap())
@@ -184,6 +206,52 @@ fn dispatch(
         "workspace.focus" => {
             let p: WorkspaceRefParams = parse(params)?;
             engine.focus_workspace(resolve_workspace(engine, &p.workspace)?)?;
+            Ok(Value::Null)
+        }
+
+        // -- tabs: the named screens inside a workspace ----------------------
+        "tab.list" => Ok(serde_json::to_value(
+            engine
+                .snapshot()
+                .workspaces
+                .into_iter()
+                .flat_map(|w| w.tabs)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()),
+
+        "tab.new" => {
+            let p: TabNewParams = parse(params)?;
+            let workspace = match &p.workspace {
+                Some(reference) => resolve_workspace(engine, reference)?,
+                None => engine
+                    .snapshot()
+                    .active_workspace
+                    .ok_or_else(|| RpcDispatchError::Other("no active workspace".into()))?,
+            };
+            let (tab, pane) = engine.new_tab(workspace, p.name, 80, 24)?;
+            Ok(serde_json::to_value(TabNewResult {
+                tab: tab.to_string(),
+                pane: pane.to_string(),
+            })
+            .unwrap())
+        }
+
+        "tab.close" => {
+            let p: TabRefParams = parse(params)?;
+            engine.close_tab(resolve_tab(engine, &p.tab)?)?;
+            Ok(Value::Null)
+        }
+
+        "tab.focus" => {
+            let p: TabRefParams = parse(params)?;
+            engine.focus_tab(resolve_tab(engine, &p.tab)?)?;
+            Ok(Value::Null)
+        }
+
+        "tab.rename" => {
+            let p: TabRenameParams = parse(params)?;
+            engine.rename_tab(resolve_tab(engine, &p.tab)?, p.name)?;
             Ok(Value::Null)
         }
 
@@ -256,13 +324,16 @@ fn dispatch(
             // Default to the calling pane; fall back to the visible pane.
             let pane = match &p.pane {
                 Some(reference) => resolve_pane(engine, reference)?,
-                None => engine
-                    .snapshot()
-                    .workspaces
-                    .iter()
-                    .find(|w| Some(w.id) == engine.snapshot().active_workspace)
-                    .and_then(|w| w.active_pane)
-                    .ok_or_else(|| RpcDispatchError::Other("no active pane".into()))?,
+                None => {
+                    let snapshot = engine.snapshot();
+                    snapshot
+                        .workspaces
+                        .iter()
+                        .find(|w| Some(w.id) == snapshot.active_workspace)
+                        .and_then(|w| w.tabs.iter().find(|t| Some(t.id) == w.active_tab))
+                        .and_then(|t| t.active_pane)
+                        .ok_or_else(|| RpcDispatchError::Other("no active pane".into()))?
+                }
             };
             engine.notify_pane(pane, p.kind, p.title, p.body);
             Ok(Value::Null)
