@@ -308,8 +308,14 @@ pub mod methods {
     use crate::SplitAxis;
 
     #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Default)]
     pub struct WorkspaceCreateParams {
+        #[serde(default)]
         pub name: Option<String>,
+        /// Name for the workspace's first tab (defaults to `탭 1`).
+        #[serde(default)]
+        pub tab_name: Option<String>,
+        #[serde(default)]
         pub cwd: Option<String>,
     }
 

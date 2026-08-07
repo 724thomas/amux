@@ -7,7 +7,6 @@ import {
   focusPane,
   focusTab,
   focusWorkspace,
-  newTab,
   splitPane,
   type LayoutNode,
   type PaneId,
@@ -20,6 +19,7 @@ import {
   broadcast,
   palette,
   dashboard,
+  tabCreate,
   toggleComposerFocus,
   wsCreate,
 } from "./state.svelte";
@@ -209,8 +209,10 @@ function dispatch(e: KeyboardEvent): boolean {
     // otherwise use (Ctrl+W deletes a word, Ctrl+T is fzf's file search), so
     // they are deliberately taken from the terminal here.
     if (e.code === "KeyT") {
+      // Open the title prompt (the tab bar renders the input); nothing is
+      // created until the user confirms, same as new-workspace.
       const ws = activeWorkspace();
-      if (ws) void newTab(ws.id);
+      if (ws) tabCreate.workspace = ws.id;
       return true;
     }
     if (e.code === "KeyW") {

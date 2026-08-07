@@ -12,10 +12,19 @@
     dashboard,
     activeTabPaneCount,
     focusTerm,
+    tabCreate,
     tabHasBadge,
     tabStatus,
   } from "./lib/state.svelte";
-  import { closeTab, focusTab, moveTab, newTab, renameTab, type TabId } from "./lib/ipc";
+  import {
+    closeTab,
+    focusTab,
+    moveTab,
+    newTab,
+    renameTab,
+    type TabId,
+    type WorkspaceId,
+  } from "./lib/ipc";
   import { handleKey } from "./lib/keymap";
   import { setSidebarWidth, settings } from "./lib/settings.svelte";
   import { themeById } from "./lib/themes";
@@ -40,6 +49,37 @@
   function commitRenameTab() {
     if (renamingTab && renameValue.trim()) void renameTab(renamingTab, renameValue.trim());
     renamingTab = null;
+  }
+
+  // New-tab title prompt. Opened by the tab bar "+", Ctrl+T or the palette —
+  // all three only set `tabCreate.workspace`, and the input below is the single
+  // place a tab is actually born. A blank name falls through to the engine's
+  // auto-name (`탭 N`), so Ctrl+T then Enter is still a one-beat "just give me
+  // a tab".
+  let newTabName = $state("");
+  let newTabInput = $state<HTMLInputElement | null>(null);
+  // A plain `autofocus` attribute doesn't fire on a dynamically-mounted input
+  // in this webview (the Palette and the new-workspace prompt hit the same
+  // thing), so focus it explicitly once the prompt opens.
+  $effect(() => {
+    if (tabCreate.workspace) newTabInput?.focus();
+  });
+
+  function startCreateTab(workspace: WorkspaceId) {
+    newTabName = "";
+    tabCreate.workspace = workspace;
+  }
+
+  function commitCreateTab(workspace: WorkspaceId) {
+    const name = newTabName.trim();
+    tabCreate.workspace = null;
+    newTabName = "";
+    void newTab(workspace, name || undefined);
+  }
+
+  function cancelCreateTab() {
+    tabCreate.workspace = null;
+    newTabName = "";
   }
 
   onMount(() => {
@@ -180,9 +220,25 @@
               {/if}
             </div>
           {/each}
-          <button class="tab-add" title="새 탭 (Ctrl+T)" onclick={() => void newTab(ws.id)}>
-            +
-          </button>
+          {#if tabCreate.workspace === ws.id}
+            <input
+              class="tab-new-input"
+              bind:this={newTabInput}
+              placeholder="새 탭 이름 (Enter 생성 · Esc 취소)"
+              bind:value={newTabName}
+              onblur={cancelCreateTab}
+              onclick={(e) => e.stopPropagation()}
+              onkeydown={(e) => {
+                if (e.key === "Enter") commitCreateTab(ws.id);
+                else if (e.key === "Escape") cancelCreateTab();
+                e.stopPropagation();
+              }}
+            />
+          {:else}
+            <button class="tab-add" title="새 탭 (Ctrl+T)" onclick={() => startCreateTab(ws.id)}>
+              +
+            </button>
+          {/if}
         </div>
         <div class="tab-body">
           {#each ws.tabs as tab (tab.id)}
@@ -352,6 +408,23 @@
     border: none;
     border-bottom: 1px solid var(--accent);
     outline: none;
+  }
+  /* Sits where the "+" was, sized like a tab so the bar doesn't jump. */
+  .tab-new-input {
+    flex: 1 1 0;
+    min-width: 120px;
+    align-self: center;
+    padding: 6px 10px;
+    font: inherit;
+    font-size: 0.78rem;
+    color: var(--text);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border: 1px solid var(--accent);
+    border-radius: 7px 7px 0 0;
+    outline: none;
+  }
+  .tab-new-input::placeholder {
+    color: var(--muted);
   }
   .tab-body {
     position: relative;

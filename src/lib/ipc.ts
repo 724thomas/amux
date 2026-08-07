@@ -88,8 +88,14 @@ export const getSnapshot = () => invoke<Snapshot>("get_snapshot");
 
 // -- workspaces ---------------------------------------------------------------
 
-export const createWorkspace = (name?: string, cols = 80, rows = 24) =>
-  invoke<WorkspaceId>("create_workspace", { name: name ?? null, cols, rows });
+/** `tabName` names the workspace's first tab; blank falls back to `탭 1`. */
+export const createWorkspace = (name?: string, tabName?: string, cols = 80, rows = 24) =>
+  invoke<WorkspaceId>("create_workspace", {
+    name: name ?? null,
+    tabName: tabName ?? null,
+    cols,
+    rows,
+  });
 
 export const closeWorkspace = (workspace: WorkspaceId) =>
   invoke<void>("close_workspace", { workspace });

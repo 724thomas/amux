@@ -66,30 +66,51 @@
   let renameValue = $state("");
   let draggedId = $state<WorkspaceId | null>(null);
 
-  // New-workspace title prompt (opened by the "+" button or Ctrl+Shift+T via the
-  // shared wsCreate flag). The inline input below always appears before any
-  // workspace is created; a blank name falls back to the engine's auto-name.
+  // New-workspace prompt (opened by the "+" button or Ctrl+Shift+N via the
+  // shared wsCreate flag). Two steps, because a workspace is born with its
+  // first tab already in it: ask the workspace title, then that tab's title —
+  // the same "name it before it exists" beat as Ctrl+T. Nothing is created
+  // until the second Enter; a blank name at either step falls back to the
+  // engine's auto-name (`워크스페이스 N` / `탭 1`).
+  let wsStep = $state<"workspace" | "tab">("workspace");
+  // One input element serves both steps — only its placeholder and the value it
+  // holds change. Swapping in a *second* element would unmount the focused one,
+  // and its `onblur` (which cancels) could fire on the way out and kill the
+  // prompt mid-flow.
+  let wsDraft = $state("");
   let newWsName = $state("");
   let newWsInput = $state<HTMLInputElement | null>(null);
   // A plain `autofocus` attribute doesn't fire on a dynamically-mounted input in
   // this webview (Palette hits the same issue), so focus it explicitly once the
-  // prompt opens — works whether opened by mouse ("+") or keyboard (Ctrl+Shift+T).
+  // prompt opens — works whether opened by mouse ("+") or keyboard (Ctrl+Shift+N).
   $effect(() => {
     if (wsCreate.open) newWsInput?.focus();
   });
   function startCreateWorkspace() {
+    wsDraft = "";
     newWsName = "";
+    wsStep = "workspace";
     wsCreate.open = true;
   }
-  function commitCreateWorkspace() {
-    const name = newWsName.trim();
-    wsCreate.open = false;
-    newWsName = "";
-    void createWorkspace(name || undefined);
+  /** Enter on step 1 banks the workspace title and moves to the tab title;
+   *  Enter on step 2 is what actually creates both. */
+  function advanceCreateWorkspace() {
+    if (wsStep === "workspace") {
+      newWsName = wsDraft.trim();
+      wsDraft = "";
+      wsStep = "tab";
+      return;
+    }
+    const name = newWsName;
+    const tabName = wsDraft.trim();
+    cancelCreateWorkspace();
+    void createWorkspace(name || undefined, tabName || undefined);
   }
   function cancelCreateWorkspace() {
     wsCreate.open = false;
+    wsDraft = "";
     newWsName = "";
+    wsStep = "workspace";
   }
 
   /// Branch / cwd shown on a tab row come from the pane the tab is focused on
@@ -281,14 +302,24 @@
     {/each}
   </ul>
   {#if wsCreate.open}
+    <!-- Step 1 asks for the workspace title, step 2 for its first tab's.
+         One input, swapped in place, so the sidebar doesn't jump. -->
+    <div class="add-steps">
+      <span class="add-step">{wsStep === "workspace" ? "1/2 워크스페이스" : "2/2 첫 탭"}</span>
+      {#if wsStep === "tab" && newWsName}
+        <span class="add-done">{newWsName}</span>
+      {/if}
+    </div>
     <input
       class="add-input"
       bind:this={newWsInput}
-      placeholder="새 워크스페이스 이름 (Enter 생성 · Esc 취소)"
-      bind:value={newWsName}
+      placeholder={wsStep === "workspace"
+        ? "워크스페이스 이름 (Enter 다음 · Esc 취소)"
+        : "첫 탭 이름 (Enter 생성 · Esc 취소)"}
+      bind:value={wsDraft}
       onblur={cancelCreateWorkspace}
       onkeydown={(e) => {
-        if (e.key === "Enter") commitCreateWorkspace();
+        if (e.key === "Enter") advanceCreateWorkspace();
         else if (e.key === "Escape") cancelCreateWorkspace();
         e.stopPropagation();
       }}
@@ -718,8 +749,24 @@
   .add:hover {
     background: var(--surface-4);
   }
+  /* "1/2 워크스페이스" → "2/2 첫 탭" progress line above the input, with the
+     name already entered echoed back so step 2 isn't context-free. */
+  .add-steps {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 8px 8px 0;
+    font-size: 0.68rem;
+    color: var(--muted);
+  }
+  .add-done {
+    padding: 1px 6px;
+    color: var(--text);
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    border-radius: 6px;
+  }
   .add-input {
-    margin: 8px;
+    margin: 6px 8px 8px;
     padding: 7px;
     font-size: 0.8rem;
     color: var(--text);

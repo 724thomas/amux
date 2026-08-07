@@ -194,7 +194,7 @@ fn dispatch(
         "workspace.create" => {
             let p: WorkspaceCreateParams = parse(params)?;
             let (ws, tab, pane) =
-                engine.create_workspace(p.name, p.cwd.map(Into::into), 80, 24)?;
+                engine.create_workspace(p.name, p.tab_name, p.cwd.map(Into::into), 80, 24)?;
             Ok(serde_json::to_value(WorkspaceCreateResult {
                 workspace: ws.to_string(),
                 tab: tab.to_string(),

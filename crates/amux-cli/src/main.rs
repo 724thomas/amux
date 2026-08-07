@@ -92,6 +92,9 @@ enum WsCommand {
     Create {
         #[arg(long)]
         name: Option<String>,
+        /// Name for the workspace's first tab (defaults to `탭 1`)
+        #[arg(long)]
+        tab_name: Option<String>,
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
     },
@@ -254,9 +257,13 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
 
-        Command::Ws(WsCommand::Create { name, cwd }) => client.call(
+        Command::Ws(WsCommand::Create { name, tab_name, cwd }) => client.call(
             "workspace.create",
-            json!({ "name": name, "cwd": cwd.map(|p| p.to_string_lossy().into_owned()) }),
+            json!({
+                "name": name,
+                "tab_name": tab_name,
+                "cwd": cwd.map(|p| p.to_string_lossy().into_owned()),
+            }),
         )?,
 
         Command::Ws(WsCommand::Focus { workspace }) => {

@@ -22,11 +22,12 @@ pub fn get_snapshot(engine: Eng<'_>) -> Snapshot {
 pub fn create_workspace(
     engine: Eng<'_>,
     name: Option<String>,
+    tab_name: Option<String>,
     cols: u16,
     rows: u16,
 ) -> Result<WorkspaceId, String> {
     engine
-        .create_workspace(name, None, cols, rows)
+        .create_workspace(name, tab_name, None, cols, rows)
         .map(|(ws, _tab, _pane)| ws)
         .map_err(err)
 }

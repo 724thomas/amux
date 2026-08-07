@@ -5,11 +5,9 @@
   import {
     closePane,
     closeTab,
-    createWorkspace,
     focusPane,
     focusTab,
     focusWorkspace,
-    newTab,
     splitPane,
   } from "./ipc";
   import {
@@ -21,6 +19,8 @@
     palette,
     focusTerm,
     paneLabel,
+    tabCreate,
+    wsCreate,
   } from "./state.svelte";
   import { settings, setTheme, toggleShowComposer } from "./settings.svelte";
   import { THEMES } from "./themes";
@@ -85,7 +85,12 @@
     const aws = activeWorkspace();
     const at = activeTab();
     if (aws) {
-      out.push({ kind: "action", label: "새 탭", detail: "Ctrl+T", run: () => void newTab(aws.id) });
+      out.push({
+        kind: "action",
+        label: "새 탭",
+        detail: "Ctrl+T — 이름을 물어본 뒤 만듭니다",
+        run: () => (tabCreate.workspace = aws.id),
+      });
     }
     if (at) {
       out.push({ kind: "action", label: "탭 닫기", detail: "Ctrl+W", run: () => void closeTab(at.id) });
@@ -95,7 +100,14 @@
       out.push({ kind: "action", label: "아래로 분할", run: () => void splitPane(ap, "vertical") });
       out.push({ kind: "action", label: "이 터미널 닫기", run: () => void closePane(ap) });
     }
-    out.push({ kind: "action", label: "새 워크스페이스", run: () => void createWorkspace() });
+    // Route through the sidebar prompt rather than creating one outright, so
+    // every entry point asks for the workspace and first-tab names alike.
+    out.push({
+      kind: "action",
+      label: "새 워크스페이스",
+      detail: "Ctrl+Shift+N — 이름과 첫 탭 이름을 물어본 뒤 만듭니다",
+      run: () => (wsCreate.open = true),
+    });
     for (const ws of snap?.workspaces ?? []) {
       out.push({ kind: "workspace", label: ws.name, detail: "워크스페이스 전환", run: () => void focusWorkspace(ws.id) });
       for (const tab of ws.tabs) {

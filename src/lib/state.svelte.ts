@@ -9,6 +9,7 @@ import {
   type PaneInfo,
   type Snapshot,
   type TabInfo,
+  type WorkspaceId,
   type WorkspaceInfo,
 } from "./ipc";
 
@@ -204,10 +205,17 @@ export const broadcast = $state<{ on: boolean }>({ on: false });
 export const palette = $state<{ open: boolean }>({ open: false });
 
 // New-workspace title prompt: creating a workspace (via the sidebar "+" button
-// or Ctrl+Shift+T) always opens an inline title input first — no workspace is
+// or Ctrl+Shift+N) always opens an inline title input first — no workspace is
 // created until the user confirms. Shared so both entry points drive the one
 // input the Sidebar renders. Transient.
 export const wsCreate = $state<{ open: boolean }>({ open: false });
+
+// New-tab title prompt, the same idea one level down: Ctrl+T, the tab bar "+"
+// and the palette all just name the workspace to open a tab in, and the tab bar
+// renders one inline input at the end of that workspace's tabs. Nothing is
+// created until the user confirms; a blank name falls back to the engine's
+// auto-name (`탭 N`). Transient.
+export const tabCreate = $state<{ workspace: WorkspaceId | null }>({ workspace: null });
 
 // --- Dashboard (Mission Control) -------------------------------------------
 // A JARVIS-style full-screen overlay (Ctrl+Shift+A) showing every live agent

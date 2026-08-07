@@ -194,9 +194,12 @@ impl Engine {
     // -- workspaces ---------------------------------------------------------
 
     /// A workspace is never empty: it is born with one tab holding one pane.
+    /// `tab_name` names that first tab — the UI asks for it in the same breath
+    /// as the workspace title, so the tab you land in isn't a nameless `탭 1`.
     pub fn create_workspace(
         self: &Arc<Self>,
         name: Option<String>,
+        tab_name: Option<String>,
         cwd: Option<std::path::PathBuf>,
         cols: u16,
         rows: u16,
@@ -211,7 +214,7 @@ impl Engine {
         tabs.insert(
             tab_id,
             TabState {
-                name: "탭 1".into(),
+                name: tab_name.unwrap_or_else(|| "탭 1".into()),
                 layout: LayoutNode::Leaf { pane: pane.id },
                 active_pane: pane.id,
             },
@@ -1043,7 +1046,7 @@ mod tests {
     #[test]
     fn pinned_done_survives_every_automatic_writer() {
         let engine = Engine::new();
-        let (_ws, _tab, id) = engine.create_workspace(None, None, 80, 24).unwrap();
+        let (_ws, _tab, id) = engine.create_workspace(None, None, None, 80, 24).unwrap();
         let pane = engine.pane(id).unwrap();
 
         engine.set_pane_done(id, true).unwrap();
@@ -1092,7 +1095,7 @@ mod tests {
     #[test]
     fn pinned_done_survives_the_silence_heuristic_while_an_app_paints() {
         let engine = Engine::new();
-        let (_ws, _tab, id) = engine.create_workspace(None, None, 80, 24).unwrap();
+        let (_ws, _tab, id) = engine.create_workspace(None, None, None, 80, 24).unwrap();
         let pane = engine.pane(id).unwrap();
 
         // The heuristic's live-work branches only engage while a foreground
@@ -1130,7 +1133,7 @@ mod tests {
     #[test]
     fn set_ratio_only_touches_the_tab_it_names() {
         let engine = Engine::new();
-        let (ws, tab_a, pane_a) = engine.create_workspace(None, None, 80, 24).unwrap();
+        let (ws, tab_a, pane_a) = engine.create_workspace(None, None, None, 80, 24).unwrap();
         engine.split_pane(pane_a, SplitAxis::Horizontal, 80, 24).unwrap();
         let (tab_b, pane_b) = engine.new_tab(ws, None, 80, 24).unwrap();
         engine.split_pane(pane_b, SplitAxis::Horizontal, 80, 24).unwrap();
@@ -1163,7 +1166,7 @@ mod tests {
     #[test]
     fn move_pane_refuses_to_cross_tabs() {
         let engine = Engine::new();
-        let (ws, _tab_a, pane_a) = engine.create_workspace(None, None, 80, 24).unwrap();
+        let (ws, _tab_a, pane_a) = engine.create_workspace(None, None, None, 80, 24).unwrap();
         let sibling = engine.split_pane(pane_a, SplitAxis::Horizontal, 80, 24).unwrap();
         let (_tab_b, pane_b) = engine.new_tab(ws, None, 80, 24).unwrap();
 
@@ -1181,7 +1184,7 @@ mod tests {
     #[test]
     fn closing_the_last_pane_folds_the_tab_then_the_workspace() {
         let engine = Engine::new();
-        let (ws, tab_a, pane_a) = engine.create_workspace(None, None, 80, 24).unwrap();
+        let (ws, tab_a, pane_a) = engine.create_workspace(None, None, None, 80, 24).unwrap();
         let sibling = engine.split_pane(pane_a, SplitAxis::Horizontal, 80, 24).unwrap();
         let (tab_b, pane_b) = engine.new_tab(ws, None, 80, 24).unwrap();
 
@@ -1211,7 +1214,7 @@ mod tests {
     #[test]
     fn unpinning_an_unpinned_pane_leaves_its_status_alone() {
         let engine = Engine::new();
-        let (_ws, _tab, id) = engine.create_workspace(None, None, 80, 24).unwrap();
+        let (_ws, _tab, id) = engine.create_workspace(None, None, None, 80, 24).unwrap();
         let pane = engine.pane(id).unwrap();
 
         engine.notify_pane(id, NotifyKind::Progress, None, None);
