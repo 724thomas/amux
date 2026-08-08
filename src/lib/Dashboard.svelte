@@ -332,11 +332,7 @@
     opacity: 0.5;
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .reticle,
-    .ring,
-    .ring::before {
-      animation: none !important;
-    }
-  }
+  /* 시스템의 "애니메이션 사용" 설정(prefers-reduced-motion)에 반응하던 규칙을
+     일부러 제거했다 — amux는 그 설정과 무관하게 동작한다. 자세한 경위는
+     src/lib/Terminal.svelte의 .wave-lab 주석 참고. 되돌리지 말 것. */
 </style>

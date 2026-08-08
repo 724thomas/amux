@@ -122,6 +122,11 @@ function focusTabByIndex(index: number) {
  */
 export function handleKey(e: KeyboardEvent): boolean {
   if (e.type !== "keydown") return false;
+  // IME 조합(한글 자모를 모아 한 글자를 만드는 과정) 중의 키는 단축키로 보지
+  // 않는다. 조합 중에는 keyCode가 229로 뭉뚱그려 오고 `e.key`도 실제 누른 키와
+  // 다르게 실릴 수 있어서, 여기서 가로채 preventDefault를 걸면 조합이 끊기고
+  // 그 시점의 조합 버퍼가 통째로 다시 입력된다.
+  if (e.isComposing || e.keyCode === 229) return false;
   const stamped = e as KeyboardEvent & { __amuxHandled?: boolean };
   if (stamped.__amuxHandled) return true;
   const consumed = dispatch(e);

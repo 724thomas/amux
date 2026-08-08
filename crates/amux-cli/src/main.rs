@@ -74,7 +74,16 @@ enum Command {
     Focus { pane: String },
     /// Raise a notification for a pane (for agent hooks)
     Notify {
-        #[arg(long, value_parser = ["attention", "done", "progress"], default_value = "attention")]
+        /// `idle` is what the SessionStart hook sends: it puts the pane in
+        /// hook-managed mode with no work in flight. It was missing from this
+        /// list while `scripts/install-claude-hooks.py` had been installing
+        /// `amux notify --kind idle` all along, so that hook failed on every
+        /// Claude start — silently, because hook commands end in `|| true`.
+        #[arg(
+            long,
+            value_parser = ["attention", "done", "progress", "idle"],
+            default_value = "attention"
+        )]
         kind: String,
         #[arg(long)]
         title: Option<String>,

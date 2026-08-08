@@ -190,20 +190,59 @@
   // 해결: pane 맨 아래에 터미널과 분리된 입력칸을 붙인다. 여기 타이핑하는
   // 동안 xterm은 아무 입력도 받지 않으므로 스크롤 위치가 그대로 있고, Enter를
   // 누르는 순간에만 텍스트가 PTY로 한 번에 들어간다.
-  // 자리 차지 방식: 쉴 때 높이만큼만 레이아웃에서 자리를 차지(.composer-slot)
-  // 하고, 길어질 때는 터미널 위로 겹쳐 자란다. 타이핑 중 PTY 리사이즈가
-  // 반복되면 TUI가 계속 다시 그려져 어지럽기 때문.
+  // 자리 차지 방식: 입력창은 세로 스택 안에 그대로 놓인다. 내용이 길어져 높이가
+  // 자라면 그만큼 터미널 칸이 실제로 줄어들고(가려지지 않는다), 줄어든 칸을
+  // ResizeObserver가 감지해 xterm과 PTY 크기까지 맞춘다. 그 대가로 줄 수가 바뀌는
+  // 순간마다 안에서 돌던 TUI가 화면을 한 번 다시 그린다 — 키 하나마다가 아니라
+  // 줄이 늘고 줄 때만이라 감당할 만하다고 보고 고른 쪽이다.
   const composerOn = $derived(settings.showComposer ?? true);
+
+  // ── IME 조합 가드 ────────────────────────────────────────────────────────
+  // 한글·일본어는 자모/가나를 모아 한 글자를 만드는 "조합(composition)" 단계를
+  // 거치고, 그 동안 글자는 아직 어느 입력 요소에도 확정되지 않은 채 IME 안에만
+  // 있다. xterm은 조합이 끝나면 자기 숨은 textarea에서
+  // `value.substring(조합 시작 위치)` 를 잘라 PTY로 보내는데(CompositionHelper),
+  // 그 textarea는 **blur될 때만** 비워진다. 그래서 조합 도중에 키보드 포커스가
+  // 움직이면 시작 위치와 실제 값이 어긋나, 이미 친 글이 통째로 한 번 더
+  // 들어가거나 반대로 사라진다 — 사용자가 겪은 "타이핑 중 갑자기 작성한 게
+  // 다시 붙여넣어지는" 증상의 정체다.
+  //
+  // amux는 사람이 아무것도 안 해도 포커스를 옮기는 자리가 여럿이라(엔진이
+  // pane을 waiting으로 바꿀 때, 활성 pane이 바뀔 때, focusTerm 호출 등) 이
+  // 함정을 특히 자주 밟는다. 그래서 조합이 진행 중인 동안에는 **자동 포커스
+  // 이동을 전부 보류**한다. 조합이 끝나면 이 값이 false로 돌아가고, 이걸 읽는
+  // $effect들이 다시 돌면서 미뤄 둔 포커스 이동을 그때 수행한다.
+  let imeComposing = $state(false);
+
+  // ── 오타성 스크롤 가드 ───────────────────────────────────────────────────
+  // xterm은 스크롤백이 없는 화면(vim·tmux 같은 전체화면 앱이 쓰는 "대체 화면
+  // 버퍼")에서 **휠 이벤트를 위/아래 방향키로 바꿔 앱에 보낸다**. 원래는 마우스
+  // 지원이 없는 앱에서도 휠로 스크롤할 수 있게 하려는 배려다.
+  //
+  // 그런데 노트북 터치패드에서는 타이핑 중 손바닥이나 손가락이 살짝 스치기만
+  // 해도 이 변환이 일어난다. 그리고 Claude Code는 ↑ 를 받으면 **직전에 보낸
+  // 프롬프트를 입력창에 통째로 되돌려 놓는다.** 즉 사용자가 아무 키도 안 눌렀는데
+  // 이미 쓴 글이 다시 붙여넣어진 것처럼 보인다.
+  //
+  // 그래서 마지막 키 입력 이후 이 시간 안에 들어온 휠은 "타이핑 중 스친 것"으로
+  // 보고 방향키 변환을 막는다. 손을 멈추고 의도적으로 스크롤하는 경우는 이 창을
+  // 벗어나므로 정상 동작한다.
+  const TYPING_SCROLL_GUARD_MS = 800;
+  let lastKeyAt = 0;
+
   let draft = $state("");
-  let composerH = $state(0); // live height (grows with the draft)
-  let restH = $state(0); // height while empty — that's what the slot reserves
   let ta = $state<HTMLTextAreaElement>();
   let composerFocused = $state(false);
 
   // Grow the box with its content, up to ~45% of the pane; then scroll inside.
   function autosize() {
     if (!ta) return;
-    const max = Math.max(80, Math.round((host?.clientHeight ?? 400) * 0.45));
+    // 최대 높이의 기준은 **pane 전체 높이**(host의 부모인 .term-stack)여야 한다.
+    // 터미널 칸(host)을 기준으로 삼으면 진동한다: 입력창이 커지면 터미널이 줄고
+    // → 기준이 줄어 최대치가 낮아지고 → 입력창이 다시 줄고 → 터미널이 늘고 …
+    // .term-stack은 pane에 고정(position: absolute; inset: 0)이라 흔들리지 않는다.
+    const paneH = host?.parentElement?.clientHeight ?? host?.clientHeight ?? 400;
+    const max = Math.max(80, Math.round(paneH * 0.45));
     ta.style.height = "auto";
     // +2: box-sizing is border-box app-wide, but scrollHeight excludes borders.
     ta.style.height = Math.min(ta.scrollHeight + 2, max) + "px";
@@ -273,6 +312,9 @@
   }
 
   function composerKey(e: KeyboardEvent) {
+    // 입력창에서 치는 동안에도 "타이핑 중"이다 — 위쪽 터미널 위로 손이 스쳐
+    // 휠이 들어오면 막아야 하므로 여기서도 시각을 찍는다.
+    lastKeyAt = Date.now();
     // 한글/일본어 IME 조합 중의 Enter는 "글자 확정"이지 전송이 아니다.
     // 이 가드가 없으면 "안녕"을 확정하는 Enter가 그대로 전송돼 버린다.
     if (e.isComposing || e.keyCode === 229) return;
@@ -315,16 +357,18 @@
     const w = waitingInput;
     // 전환(false→true) 시에만, 그리고 쓰던 글이 없을 때만 넘긴다. 작성 중이면
     // 절대 뺏지 않는다 — 반쯤 쓴 프롬프트가 TUI로 새어 들어가면 안 되니까.
-    if (w && !prevWaiting && untrack(() => composerFocused && draft === "")) {
+    //
+    // `draft === ""` 만으로는 부족하다: 한글을 치는 중에는 글자가 아직 IME 안에
+    // 머물러 draft가 여전히 빈 문자열이다. 그 순간 포커스를 뺏으면 조합이
+    // 끊기면서 이미 친 글이 통째로 다시 들어간다. 게다가 이 effect는 사람이
+    // 아니라 **엔진의 상태 변화**가 방아쇠라, 사용자 입장에서는 아무 조작도 안
+    // 했는데 갑자기 벌어지는 일이 된다. 그래서 조합 중에는 아예 건너뛴다.
+    if (w && !prevWaiting && !imeComposing && untrack(() => composerFocused && draft === "")) {
       term?.focus();
     }
     prevWaiting = w;
   });
 
-  // 빈 상태의 높이 = 레이아웃에서 예약할 높이. 글꼴 크기가 바뀌면 자동으로 갱신.
-  $effect(() => {
-    if (draft === "" && composerH > 0) restH = composerH;
-  });
   $effect(() => {
     void settings.fontSize;
     void composerOn;
@@ -451,6 +495,11 @@
     // App shortcuts (split/navigate/...) win over the terminal; everything
     // else (Ctrl+C, Tab, F-keys...) flows through to the shell untouched.
     term.attachCustomKeyEventHandler((e) => {
+      // IME 조합 중의 키는 우리가 해석하지 않고 xterm의 조합 처리에 그대로
+      // 맡긴다. 조합 중에는 keyCode가 229로 뭉뚱그려 오고 `e.key`도 실제 키와
+      // 다르게 실릴 수 있어서, 여기서 단축키로 가로채면 조합이 중간에 끊기고
+      // 그 시점의 조합 버퍼가 통째로 다시 흘러나온다.
+      if (e.isComposing || e.keyCode === 229) return true;
       // Shift+Enter → 줄바꿈: kitty 모드 앱(Claude Code)에는 CSI-u 인코딩,
       // 그 외에는 ESC+CR (iTerm2 /terminal-setup과 동일한 매핑).
       if (
@@ -540,6 +589,15 @@
       }
       return !handleKey(e);
     });
+    // 휠 → 방향키 변환을 가로챈다. `false` 를 돌려주면 xterm 은 그 휠 이벤트를
+    // 아예 처리하지 않으므로, 앱으로 ESC[A / ESC[B 가 나가지 않는다.
+    term.attachCustomWheelEventHandler((e) => {
+      // Ctrl+휠은 글꼴 확대/축소 — 터미널 호스트의 onwheel 이 처리하므로 넘긴다.
+      if (e.ctrlKey) return false;
+      // 방금까지 타이핑하고 있었다면 손이 스친 것으로 보고 삼킨다.
+      if (Date.now() - lastKeyAt < TYPING_SCROLL_GUARD_MS) return false;
+      return true;
+    });
     // Linux terminal convention: selecting text copies it.
     let selectionTimer: ReturnType<typeof setTimeout> | undefined;
     term.onSelectionChange(() => {
@@ -549,6 +607,54 @@
       }, 150);
     });
     term.open(host);
+    // 마지막 키 입력 시각은 **DOM에서 직접** 찍는다. 아래 휠 가드가 "지금
+    // 타이핑 중인가"를 판단하는 근거다.
+    //
+    // 왜 xterm의 키 핸들러가 아니라 여기인가: 그쪽에는 IME 조합 중 키를 xterm에
+    // 그대로 넘기는 조기 반환이 맨 앞에 있어서, **한글을 치는 동안에는 시각이
+    // 한 번도 갱신되지 않았다.** 한글 조합 중 키는 keyCode가 229로 오기 때문이다.
+    // 그 결과 "입력창에 칠 때는 멀쩡한데 터미널에 칠 때만 증상이 남는" 비대칭이
+    // 생겼다(입력창 쪽 composerKey는 조기 반환보다 앞에서 시각을 찍고 있었다).
+    // 캡처 단계의 DOM 리스너는 xterm 내부 사정과 무관하게 항상 먼저 실행된다.
+    const stampKey = () => (lastKeyAt = Date.now());
+    host.addEventListener("keydown", stampKey, true);
+    // xterm은 조합 진행 여부를 공개 API로 내주지 않으므로, `term.open()` 이
+    // 만들어 둔 숨은 textarea에서 조합 시작/끝 이벤트를 직접 관찰한다.
+    const imeOn = () => (imeComposing = true);
+    const imeOff = () => (imeComposing = false);
+    const xtermTextarea = term.textarea;
+    xtermTextarea?.addEventListener("compositionstart", imeOn);
+    xtermTextarea?.addEventListener("compositionend", imeOff);
+
+    // ── xterm 한글 조합 버그 우회 ──────────────────────────────────────────
+    // xterm의 숨은 textarea는 **포커스가 빠질 때만** 비워진다. 그래서 한 번
+    // 포커스를 잡은 뒤로 친 글자가 거기 계속 쌓인다. 문제는 조합 처리 코드가
+    // 그 누적된 값을 통째로 보내 버리는 분기를 갖고 있다는 점이다.
+    //
+    //   // CompositionHelper._handleAnyTextareaChanges()
+    //   const diff = newValue.replace(oldValue, '');        // 접두사 제거가 아니라 "문자열 찾아 바꾸기"
+    //   if (newValue.length > oldValue.length)      triggerDataEvent(diff);
+    //   else if (newValue.length < oldValue.length) triggerDataEvent(DEL);
+    //   else if (newValue !== oldValue)             triggerDataEvent(newValue);  // ← 누적분 전체를 보낸다
+    //
+    // 한글은 한 글자를 **제자리에서 바꿔 가며** 완성한다("하"→"한"). 길이는 그대로인데
+    // 내용만 바뀌므로 위 세 번째 분기에 정확히 걸린다. 그 순간 textarea에 쌓여 있던
+    // "지금까지 친 것 전부"가 한 덩어리로 PTY에 다시 들어간다 — 사용자가 겪은
+    // "작성한 게 자동으로 다시 붙여넣어지는" 증상이다. 두 번째 분기도 위험하다:
+    // `replace`는 접두사 제거가 아니라서 옛 값이 새 값 안에 없으면(제자리 수정이면
+    // 대개 없다) diff가 새 값 전체가 된다.
+    //
+    // 영문에는 제자리 수정이 없어서 안 터지고, 하단 입력창은 xterm을 아예 거치지
+    // 않아서(완성된 문장을 한 번에 PTY로 보냄) 멀쩡했다 — 관찰된 비대칭 그대로다.
+    //
+    // 우회: **조합이 시작되는 순간 textarea를 비운다.** 캡처 단계로 달았기 때문에
+    // xterm 자신의 compositionstart 처리보다 먼저 돌고, xterm은 비워진 값을 기준으로
+    // 조합 시작 위치를 0으로 잡는다. 그러면 textarea에는 항상 "지금 조합 중인 글자"
+    // 하나뿐이라, 위 분기가 터지더라도 흘러나올 수 있는 최대치가 그 한 글자로 묶인다.
+    const resetImeBuffer = () => {
+      if (xtermTextarea) xtermTextarea.value = "";
+    };
+    host.addEventListener("compositionstart", resetImeBuffer, true);
     try {
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => webgl.dispose()); // falls back to DOM renderer
@@ -564,7 +670,6 @@
     // a TUI's spinner redrawing ~1–2×/s keeps the loop awake, so it reads as a
     // continuous ripple, not a wake/sleep strobe. Once the window is genuinely
     // flat the loop sleeps and clears — idle panes draw nothing, cost nothing.
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const HISTORY = 180; // samples ≈ 3s @ 60fps — the visible time window
     const RELEASE = 0.84; // per-frame decay of the smoothed level
     const SCALE = 600; // bytes/frame → ~full height (sqrt-compressed)
@@ -704,8 +809,9 @@
       }
     }
 
+    // 시스템의 "애니메이션 사용" 설정은 여기서 보지 않는다 — 위 .wave-lab 주석 참고.
     function waveWake() {
-      if (waveRunning || reduceMotion) return;
+      if (waveRunning) return;
       waveRunning = true;
       waveRaf = requestAnimationFrame(waveTick);
     }
@@ -760,7 +866,9 @@
     // active-pane change (snapshot listener, palette close, sidebar click), and
     // clicking this pane's composer is exactly such a change.
     const unregisterFocus = registerTermFocus(pane, () => {
-      if (!composerFocused) term.focus();
+      // 조합 중이면 포커스를 옮기지 않는다 — 옮기는 순간 xterm의 조합 버퍼가
+      // blur로 비워지면서 이미 친 글이 중복되거나 사라진다.
+      if (!composerFocused && !imeComposing) term.focus();
     });
     const unregisterComposer = registerComposerFocus(pane, () => {
       if (!composerOn) {
@@ -778,6 +886,10 @@
       unregisterFocus();
       observer.disconnect();
       cancelAnimationFrame(waveRaf);
+      host.removeEventListener("keydown", stampKey, true);
+      host.removeEventListener("compositionstart", resetImeBuffer, true);
+      xtermTextarea?.removeEventListener("compositionstart", imeOn);
+      xtermTextarea?.removeEventListener("compositionend", imeOff);
       channel.onmessage = () => {};
       term.dispose();
     };
@@ -786,6 +898,9 @@
   $effect(() => {
     // untrack: 입력창에서 포커스가 *빠질* 때 이 effect가 다시 돌아 터미널로
     // 포커스를 뺏어오면 안 된다(예: 사이드바 입력창을 클릭한 경우).
+    // imeComposing은 일부러 추적한다 — 조합 중에는 건너뛰었다가, 조합이
+    // 끝나 false가 되는 순간 이 effect가 다시 돌면서 포커스를 마저 옮긴다.
+    if (imeComposing) return;
     if (focused && term && !untrack(() => composerFocused)) term.focus();
   });
 
@@ -885,14 +1000,10 @@
   }}
 ></div>
   {#if composerOn}
-    <!-- 레이아웃에서 자리를 예약하는 빈 칸. 높이는 "입력창이 비었을 때의 실제
-         높이"를 그대로 쓰므로 글꼴 크기가 바뀌어도 자동으로 맞는다. -->
-    <div class="composer-slot" style="height: {restH}px"></div>
     <div
       class="composer"
       class:active={composerFocused}
       class:waiting={waitingInput}
-      bind:offsetHeight={composerH}
     >
       <textarea
         bind:this={ta}
@@ -908,6 +1019,8 @@
         onkeydown={composerKey}
         onfocus={() => (composerFocused = true)}
         onblur={() => (composerFocused = false)}
+        oncompositionstart={() => (imeComposing = true)}
+        oncompositionend={() => (imeComposing = false)}
       ></textarea>
       <button
         class="send"
@@ -1001,17 +1114,12 @@
     background: var(--bg);
   }
   /* 하단 고정 입력창 — 터미널과 완전히 분리된 입력칸이라 여기 타이핑해도
-     xterm의 스크롤 위치가 움직이지 않는다. 쉴 때 높이만 slot이 예약하고,
-     길어지면 터미널 위로 겹쳐 자란다(타이핑 중 PTY 리사이즈 방지). */
-  .composer-slot {
-    flex: 0 0 auto;
-  }
+     xterm의 스크롤 위치가 움직이지 않는다. 세로 스택 안에 그대로 놓여 있으므로
+     (position: absolute 로 띄우지 않는다) 입력창이 길어지면 그만큼 터미널 칸이
+     실제로 줄어든다 — 터미널 아래가 가려지는 일이 없다. 줄어든 칸은
+     ResizeObserver가 감지해 xterm과 PTY 크기까지 함께 맞춘다. */
   .composer {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 8;
+    flex: 0 0 auto;
     display: flex;
     align-items: flex-end;
     gap: 6px;
@@ -1149,11 +1257,14 @@
     width: 48px;
     height: 46px;
   }
-  @media (prefers-reduced-motion: reduce) {
-    .wave-lab {
-      display: none;
-    }
-  }
+  /* 여기 있던 `@media (prefers-reduced-motion: reduce) { .wave-lab { display: none } }`
+     는 일부러 뺐다. GNOME의 "애니메이션 사용"을 끄면(gsettings의
+     org.gnome.desktop.interface enable-animations = false) GTK/WebKitGTK가 그것을
+     그대로 이 미디어 질의로 전달하는데, 그러면 파형이 통째로 사라져 "출력이 흐르고
+     있다"는 정보까지 같이 없어졌다. 실제로 그 설정이 꺼져 있던 사용자가 위젯이
+     사라진 것으로 겪었다. amux는 시스템 애니메이션 설정과 무관하게 동작한다는 것이
+     의도한 방침이므로, 이 파일과 App.svelte·PaneView.svelte·Dashboard.svelte의
+     같은 규칙을 모두 제거했다. 되돌리지 말 것. */
   .ctx-menu {
     position: fixed;
     z-index: 1000;
