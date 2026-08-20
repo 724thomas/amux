@@ -50,6 +50,7 @@ pub fn router(state: AppState) -> Router {
     open.merge(guarded)
         .layer(middleware::from_fn(no_store))
         .layer(middleware::from_fn(host_guard))
+        .layer(middleware::from_fn(access_log))
         .with_state(state)
 }
 
@@ -64,6 +65,24 @@ async fn no_store(request: Request, next: Next) -> Response {
     response
         .headers_mut()
         .insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    response
+}
+
+/// Record who knocked, and what they asked for.
+///
+/// When the phone cannot reach this server the question is always the same:
+/// did the request arrive and get refused, or did it never arrive at all? A
+/// firewall drop and a network that does not route look identical from the
+/// phone — one line here tells them apart.
+async fn access_log(
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let response = next.run(request).await;
+    tracing::debug!("{} {} {} → {}", peer.ip(), method, path, response.status().as_u16());
     response
 }
 
