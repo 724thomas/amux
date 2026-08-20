@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>amux</title>
+<style>
+  /* 터미널 곁에 붙는 화면이라 어두운 쪽으로 고정한다 — 호스트 테마를 물려받지
+     않도록 배경과 글자색을 전부 직접 칠한다. */
+  :root{
+    --bg:#101317; --card:#191D23; --card-2:#1F242B;
+    --ink:#E4E8EC; --ink-2:#9AA4AF; --ink-3:#6B7480;
+    --rule:#2A3038;
+    --mark:#E08A3C; --mark-ink:#15181D;
+    --run:#D9584B; --doneish:#5FA96B; --wait:#D9B23C; --idle:#5B8FC7; --pinned:#B57BC9;
+    --term-bg:#0C0F13; --term-fg:#C8D0D8;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,"DejaVu Sans Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    --safe-b:env(safe-area-inset-bottom,0px);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font-family:var(--sans);font-size:16px;line-height:1.5;
+    -webkit-text-size-adjust:100%;overscroll-behavior:none;
+  }
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+  button:focus-visible,input:focus-visible{outline:2px solid var(--mark);outline-offset:1px}
+  .hide{display:none !important}
+
+  /* ── 공통 껍데기 ───────────────────────────────────────────── */
+  .view{display:flex;flex-direction:column;height:100dvh}
+  .bar{
+    display:flex;align-items:center;gap:.6rem;flex:none;
+    padding:.6rem .85rem;border-bottom:1px solid var(--rule);background:var(--card);
+    padding-top:calc(.6rem + env(safe-area-inset-top,0px));
+  }
+  .bar h1{margin:0;font-size:1rem;font-weight:600;flex:1 1 auto;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bar .sub{font-family:var(--mono);font-size:.72rem;color:var(--ink-3);flex:none}
+  .back{font-size:1.35rem;line-height:1;padding:.1rem .35rem;color:var(--ink-2)}
+  .scroll{flex:1 1 auto;overflow-y:auto;-webkit-overflow-scrolling:touch}
+
+  /* ── 화면 A: 탭 목록 (세로로 쓰는 화면) ────────────────────── */
+  .ws{padding:.9rem .85rem .2rem;font-size:.75rem;font-weight:600;
+    letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3)}
+  .tab{
+    display:flex;align-items:center;gap:.7rem;width:100%;text-align:left;
+    padding:.75rem .85rem;border-bottom:1px solid var(--rule);
+  }
+  .tab:active{background:var(--card-2)}
+  .dot{flex:none;width:.6rem;height:.6rem;border-radius:50%;background:var(--ink-3)}
+  .s-processing .dot{background:var(--run)}
+  .s-processed  .dot{background:var(--doneish)}
+  .s-waiting    .dot{background:var(--wait)}
+  .s-idle       .dot{background:var(--idle)}
+  .s-done       .dot{background:var(--pinned)}
+  .tab .name{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tab .meta{display:block;font-size:.73rem;color:var(--ink-3);font-family:var(--mono);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chip{
+    flex:none;font-family:var(--mono);font-size:.68rem;padding:.12rem .4rem;
+    border-radius:.25rem;border:1px solid var(--rule);color:var(--ink-2);
+  }
+  .s-waiting .chip{color:var(--wait);border-color:var(--wait)}
+  .s-processed .chip{color:var(--doneish);border-color:var(--doneish)}
+  .s-processing .chip{color:var(--run);border-color:var(--run)}
+
+  /* ── 화면 B: 터미널 (눕혀서 쓰는 화면) ─────────────────────── */
+  .termwrap{flex:1 1 auto;overflow:auto;background:var(--term-bg);
+    -webkit-overflow-scrolling:touch}
+  #screen{
+    margin:0;padding:.4rem .5rem;color:var(--term-fg);font-family:var(--mono);
+    white-space:pre;line-height:1.3;font-size:12px;
+  }
+  .rotate{
+    flex:none;background:var(--mark);color:var(--mark-ink);
+    font-size:.8rem;font-weight:600;text-align:center;padding:.35rem;
+  }
+  .keys{
+    flex:none;display:flex;gap:.35rem;padding:.4rem .5rem;
+    border-top:1px solid var(--rule);background:var(--card);
+    overflow-x:auto;scrollbar-width:none;
+  }
+  .keys::-webkit-scrollbar{display:none}
+  .keys button{
+    flex:none;font-family:var(--mono);font-size:.82rem;
+    padding:.35rem .6rem;border:1px solid var(--rule);border-radius:.3rem;
+    background:var(--card-2);color:var(--ink);min-width:2.4rem;
+  }
+  .keys button:active{background:var(--mark);color:var(--mark-ink)}
+  .compose{
+    flex:none;display:flex;gap:.45rem;padding:.5rem;
+    border-top:1px solid var(--rule);background:var(--card);
+    padding-bottom:calc(.5rem + var(--safe-b));
+  }
+  .compose input{
+    flex:1 1 auto;min-width:0;background:var(--card-2);color:var(--ink);
+    border:1px solid var(--rule);border-radius:.35rem;padding:.55rem .65rem;font-size:16px;
+  }
+  .compose button{
+    flex:none;background:var(--mark);color:var(--mark-ink);font-weight:600;
+    border-radius:.35rem;padding:.55rem .9rem;
+  }
+  .compose button:disabled{opacity:.45}
+
+  /* ── 페어링·오류 ───────────────────────────────────────────── */
+  .pad{padding:1.5rem 1.15rem;display:flex;flex-direction:column;gap:1rem;
+    max-width:26rem;margin:0 auto}
+  .pad h2{margin:0;font-size:1.15rem;font-weight:600}
+  .pad p{margin:0;color:var(--ink-2);font-size:.92rem}
+  .pad input{
+    background:var(--card-2);color:var(--ink);border:1px solid var(--rule);
+    border-radius:.4rem;padding:.7rem;font-size:1.4rem;text-align:center;
+    font-family:var(--mono);letter-spacing:.35em;
+  }
+  .pad .go{background:var(--mark);color:var(--mark-ink);font-weight:600;
+    border-radius:.4rem;padding:.7rem}
+  .err{color:var(--run);font-size:.9rem;min-height:1.2em}
+  .banner{
+    position:fixed;left:.6rem;right:.6rem;bottom:calc(.6rem + var(--safe-b));
+    background:var(--card-2);border:1px solid var(--rule);border-left:3px solid var(--run);
+    border-radius:.4rem;padding:.6rem .75rem;font-size:.86rem;z-index:20;
+  }
+</style>
+</head>
+<body>
+
+<!-- 페어링 -->
+<section id="v-pair" class="view hide">
+  <div class="scroll"><div class="pad">
+    <h2>이 폰을 등록합니다</h2>
+    <p>PC 의 amux-phone 을 띄운 터미널에 여섯 자리 코드가 떠 있습니다. 그 코드를 입력하세요. 60초가 지나면 새 코드가 나옵니다.</p>
+    <input id="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000" autocomplete="one-time-code">
+    <button class="go" id="pair-go">등록</button>
+    <div class="err" id="pair-err"></div>
+  </div></div>
+</section>
+
+<!-- 화면 A: 탭 목록 -->
+<section id="v-list" class="view hide">
+  <div class="bar">
+    <h1>amux</h1>
+    <span class="sub" id="list-sub"></span>
+    <button class="back" id="refresh" title="새로고침">⟳</button>
+  </div>
+  <div class="scroll" id="list"></div>
+</section>
+
+<!-- 화면 B: 터미널 -->
+<section id="v-term" class="view hide">
+  <div class="bar">
+    <button class="back" id="back">‹</button>
+    <h1 id="term-title"></h1>
+    <span class="sub" id="term-sub"></span>
+  </div>
+  <div class="rotate hide" id="rotate">폰을 가로로 눕히면 글자가 커집니다</div>
+  <div class="termwrap" id="termwrap"><pre id="screen"></pre></div>
+  <div class="keys" id="keys"></div>
+  <div class="compose">
+    <input id="input" placeholder="명령 입력…" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="send">
+    <button id="send">전송</button>
+  </div>
+</section>
+
+<!-- 오류 -->
+<section id="v-error" class="view hide">
+  <div class="scroll"><div class="pad">
+    <h2 id="err-title"></h2>
+    <p id="err-body"></p>
+    <button class="go" id="err-retry">다시 시도</button>
+  </div></div>
+</section>
+
+<script>
+(function () {
+  "use strict";
+
+  // 폰이 한 번에 편하게 읽는 칸수. 이보다 넓은 pane 은 자르지 않고 좌우로 민다.
+  var BASE_COLS = 160;
+  // 폭 계산에 쓰는 monospace 글자 한 칸의 가로/세로 비율. 실제 폰트로 다시 잰다.
+  var ADVANCE = 0.6;
+  var POLL_MS = 2000;
+
+  var token = localStorage.getItem("amux_token") || "";
+  var current = null;      // 지금 보고 있는 pane
+  var lastHash = null;
+  var timer = null;
+
+  var $ = function (id) { return document.getElementById(id); };
+  var views = ["v-pair", "v-list", "v-term", "v-error"];
+  function show(id) {
+    views.forEach(function (v) { $(v).classList.toggle("hide", v !== id); });
+  }
+
+  // ── 서버 대화 ────────────────────────────────────────────────
+  // 실패를 네 가지로 갈라 돌려준다. 폰에서 "빙글빙글" 하나로 뭉개지면
+  // VPN 이 꺼진 것인지 amux 가 죽은 것인지 알 수가 없다.
+  function api(path, options) {
+    options = options || {};
+    options.headers = Object.assign(
+      { "content-type": "application/json" },
+      options.headers || {},
+      token ? { authorization: "Bearer " + token } : {}
+    );
+    return fetch(path, options).then(function (res) {
+      if (res.status === 401) throw { kind: "unauthorized" };
+      if (res.status === 404) throw { kind: "pane_gone" };
+      if (res.status === 503) throw { kind: "amux_down" };
+      if (!res.ok) throw { kind: "server", status: res.status };
+      return res.json();
+    }, function () {
+      throw { kind: "unreachable" };   // fetch 자체가 실패 = 못 닿았다
+    });
+  }
+
+  var ERRORS = {
+    unauthorized: ["이 기기가 해제되었습니다", "PC 의 amux-phone 에서 --pair 로 다시 등록하세요."],
+    amux_down:    ["amux 가 응답하지 않습니다", "PC 에는 닿았지만 amux 앱이 떠 있지 않거나 소켓이 끊겼습니다."],
+    pane_gone:    ["이 탭은 닫혔습니다", "목록으로 돌아가면 남아 있는 탭이 보입니다."],
+    unreachable:  ["PC 를 찾을 수 없습니다", "VPN 이 꺼져 있거나 PC 의 주소가 바뀌었을 수 있습니다."],
+    server:       ["문제가 생겼습니다", "PC 쪽 amux-phone 로그를 확인해 주세요."]
+  };
+  function fail(e) {
+    stopPolling();
+    if (e && e.kind === "unauthorized") { token = ""; localStorage.removeItem("amux_token"); }
+    var m = ERRORS[(e && e.kind) || "server"] || ERRORS.server;
+    $("err-title").textContent = m[0];
+    $("err-body").textContent = m[1];
+    show("v-error");
+  }
+
+  // ── 페어링 ───────────────────────────────────────────────────
+  function pair(code) {
+    $("pair-err").textContent = "";
+    return fetch("/api/pair", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: code, label: "내 폰" })
+    }).then(function (r) { return r.ok ? r.json() : r.json().then(function (j) { throw j; }); })
+      .then(function (j) {
+        token = j.token;
+        localStorage.setItem("amux_token", token);
+        history.replaceState(null, "", location.pathname);   // URL 에서 코드를 지운다
+        openList();
+      })
+      .catch(function () {
+        $("pair-err").textContent = "코드가 맞지 않거나 만료됐습니다. PC 화면의 새 코드를 확인하세요.";
+      });
+  }
+
+  // ── 화면 A: 탭 목록 ──────────────────────────────────────────
+  var STATUS_LABEL = {
+    processing: "작업 중", processed: "끝남", waiting: "입력 대기",
+    idle: "대기", done: "완료 표시"
+  };
+
+  function openList() {
+    stopPolling();
+    current = null;
+    show("v-list");
+    loadList();
+  }
+
+  function loadList() {
+    api("/api/tabs").then(function (data) {
+      var host = $("list");
+      host.textContent = "";
+      var counts = { processing: 0, waiting: 0 };
+      data.workspaces.forEach(function (w) {
+        var head = document.createElement("div");
+        head.className = "ws";
+        head.textContent = w.name;
+        host.appendChild(head);
+        w.tabs.forEach(function (t) {
+          t.panes.forEach(function (p, i) {
+            if (counts[p.status] !== undefined) counts[p.status]++;
+            host.appendChild(tabRow(w, t, p, i, t.panes.length));
+          });
+        });
+      });
+      $("list-sub").textContent =
+        "작업 " + counts.processing + " · 대기 " + counts.waiting;
+    }).catch(fail);
+  }
+
+  function tabRow(w, t, p, i, total) {
+    var row = document.createElement("button");
+    row.className = "tab s-" + p.status;
+    var label = t.name + (total > 1 ? " #" + (i + 1) : "");
+
+    var dot = document.createElement("span"); dot.className = "dot";
+    var name = document.createElement("span"); name.className = "name";
+    var strong = document.createElement("span"); strong.textContent = label;
+    var meta = document.createElement("span"); meta.className = "meta";
+    meta.textContent = [p.git_branch, shortenPath(p.cwd)].filter(Boolean).join("  ");
+    name.appendChild(strong); name.appendChild(meta);
+
+    var chip = document.createElement("span"); chip.className = "chip";
+    chip.textContent = p.exited ? "종료됨" : (STATUS_LABEL[p.status] || p.status);
+
+    row.appendChild(dot); row.appendChild(name); row.appendChild(chip);
+    row.addEventListener("click", function () { openTerm(p.id, label); });
+    return row;
+  }
+
+  function shortenPath(path) {
+    if (!path) return "";
+    var parts = path.split("/").filter(Boolean);
+    return parts.length <= 2 ? path : "…/" + parts.slice(-2).join("/");
+  }
+
+  // ── 화면 B: 터미널 ───────────────────────────────────────────
+  function openTerm(pane, title) {
+    current = pane;
+    lastHash = null;
+    $("term-title").textContent = title;
+    $("term-sub").textContent = "";
+    $("screen").textContent = "";
+    show("v-term");
+    checkOrientation();
+    poll(true);
+    startPolling();
+  }
+
+  function startPolling() {
+    stopPolling();
+    timer = setInterval(function () {
+      if (document.visibilityState === "visible") poll(false);
+    }, POLL_MS);
+  }
+  function stopPolling() {
+    if (timer) { clearInterval(timer); timer = null; }
+  }
+
+  function poll(force) {
+    if (!current) return;
+    var url = "/api/screen/" + encodeURIComponent(current) +
+      (lastHash && !force ? "?since=" + lastHash : "");
+    api(url).then(function (data) {
+      lastHash = data.hash;
+      $("term-sub").textContent = stamp();
+      if (data.unchanged) return;
+      render(data);
+    }).catch(fail);
+  }
+
+  function stamp() {
+    var d = new Date();
+    return ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2) + ":" +
+           ("0" + d.getSeconds()).slice(-2);
+  }
+
+  // 글자 크기는 pane 의 실제 폭에서 나온다. pane 폭은 고정이 아니라서
+  // (실측 161칸짜리와 202칸짜리가 섞여 있다) 서버가 세어서 알려 준다.
+  // 160칸까지는 화면에 꽉 채우고, 그보다 넓으면 자르지 않고 좌우로 민다.
+  function render(data) {
+    var wrap = $("termwrap"), pre = $("screen");
+    var atBottom = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 24;
+    var fit = Math.min(data.cols || BASE_COLS, BASE_COLS);
+    var avail = wrap.clientWidth - 16;                 // padding 만큼 뺀다
+    var size = Math.max(5, avail / (fit * ADVANCE));
+    pre.style.fontSize = size.toFixed(2) + "px";
+    pre.textContent = data.text;
+    // 열자마자, 그리고 이미 맨 아래를 보고 있었으면 계속 맨 아래를 따라간다.
+    if (atBottom || !pre.dataset.seen) {
+      wrap.scrollTop = wrap.scrollHeight;
+      pre.dataset.seen = "1";
+    }
+  }
+
+  function checkOrientation() {
+    var portrait = window.innerHeight > window.innerWidth;
+    $("rotate").classList.toggle("hide", !portrait);
+  }
+
+  // ── 입력 ─────────────────────────────────────────────────────
+  // 문장을 다 쓴 뒤 한 덩어리로 보낸다. 조합 중인 한글이 터미널로 흘러가지
+  // 않으므로 데스크톱에서 고쳤던 IME 문제가 여기서는 생길 수 없다.
+  function sendText() {
+    var input = $("input"), text = input.value;
+    if (!text || !current) return;
+    input.value = "";
+    api("/api/send", {
+      method: "POST",
+      body: JSON.stringify({ pane: current, text: text, enter: true })
+    }).then(function () { setTimeout(function () { poll(true); }, 250); })
+      .catch(fail);
+  }
+
+  function sendKeys(keys) {
+    if (!current) return;
+    api("/api/keys", { method: "POST", body: JSON.stringify({ pane: current, keys: keys }) })
+      .then(function () { setTimeout(function () { poll(true); }, 250); })
+      .catch(fail);
+  }
+
+  // 폰 키보드에는 Esc 도 Ctrl 도 방향키도 없다. Claude Code 를 폰에서 다루는
+  // 일의 절반이 "번호 고르고 Enter" 라서 이 줄이 없으면 사실상 못 쓴다.
+  var KEYS = [
+    ["Esc", ["Escape"]], ["^C", ["C-c"]], ["↑", ["Up"]], ["↓", ["Down"]],
+    ["1", ["1"]], ["2", ["2"]], ["3", ["3"]],
+    ["y", ["y"]], ["n", ["n"]], ["Tab", ["Tab"]], ["⏎", ["Enter"]]
+  ];
+  KEYS.forEach(function (k) {
+    var b = document.createElement("button");
+    b.textContent = k[0];
+    b.addEventListener("click", function () { sendKeys(k[1]); });
+    $("keys").appendChild(b);
+  });
+
+  // ── 배선 ─────────────────────────────────────────────────────
+  $("back").addEventListener("click", openList);
+  $("refresh").addEventListener("click", loadList);
+  $("send").addEventListener("click", sendText);
+  $("input").addEventListener("keydown", function (e) {
+    // isComposing 중에는 무시한다 — 한글 조합 중의 Enter 는 확정이지 전송이 아니다.
+    if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); sendText(); }
+  });
+  $("pair-go").addEventListener("click", function () { pair($("code").value.trim()); });
+  $("code").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") pair($("code").value.trim());
+  });
+  $("err-retry").addEventListener("click", function () {
+    if (!token) { show("v-pair"); return; }
+    if (current) { openTerm(current, $("term-title").textContent); } else { openList(); }
+  });
+  window.addEventListener("resize", function () {
+    checkOrientation();
+    if (current) poll(true);            // 방향이 바뀌면 글자 크기를 다시 잡는다
+  });
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible" && current) poll(true);
+  });
+
+  // ── 시작 ─────────────────────────────────────────────────────
+  var urlCode = new URLSearchParams(location.search).get("code");
+  if (urlCode && !token) {
+    show("v-pair");
+    $("code").value = urlCode;
+    pair(urlCode);                      // QR 로 들어왔으면 바로 등록한다
+  } else if (!token) {
+    show("v-pair");
+  } else {
+    openList();
+  }
+})();
+</script>
+</body>
+</html>
