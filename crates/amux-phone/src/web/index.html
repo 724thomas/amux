@@ -141,6 +141,7 @@
   <div class="scroll"><div class="pad">
     <h2>이 폰을 등록합니다</h2>
     <p>PC 의 amux-phone 을 띄운 터미널에 여섯 자리 코드가 떠 있습니다. 그 코드를 입력하세요. 60초가 지나면 새 코드가 나옵니다.</p>
+    <p>이미 등록했는데 이 화면이 다시 나왔다면, 주소가 바뀐 것입니다(예: <code>http</code> → <code>https</code>). 브라우저는 주소가 다르면 다른 사이트로 보고 저장해 둔 등록을 넘겨주지 않습니다.</p>
     <input id="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000" autocomplete="one-time-code">
     <button class="go" id="pair-go">등록</button>
     <div class="err" id="pair-err"></div>
