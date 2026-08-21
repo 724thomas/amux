@@ -5,6 +5,7 @@
 # 사무실이 아닌 망에 붙을 수도 있기 때문입니다. "지금 실제로 갖고 있는 주소"에만
 # 바인딩하면, 열려서는 안 될 곳에서는 애초에 뜨지 않습니다.
 #
+#   scripts/phone.sh --setup      맨 처음 한 번 — 폰에 발급자(인증서)를 설치
 #   scripts/phone.sh              평소 — 켜고 나갔다가 돌아와서 Ctrl+C
 #   scripts/phone.sh --pair       새 폰을 등록할 때 (QR + 6자리 코드)
 #   scripts/phone.sh --qr         주소가 바뀌어 폰 북마크를 갱신할 때
@@ -17,8 +18,20 @@ PORT="${AMUX_PHONE_PORT:-8000}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/amux"
 LAST_IP_FILE="$STATE_DIR/phone-last-ip"
+CA_CERT="${XDG_CONFIG_HOME:-$HOME/.config}/amux/ca/ca.crt"
 
 die() { printf '\n  %s\n\n' "$*" >&2; exit 1; }
+
+# --setup 은 인증서를 설치하기 위한 한 번짜리 모드라 평문으로 뜹니다. 폰이
+# 아직 발급자를 모르는 상태에서 HTTPS 로 그 발급자를 내려받을 수는 없으니까요.
+SETUP=""
+ARGS=()
+for a in "$@"; do
+  case "$a" in
+    --setup) SETUP=1 ;;
+    *) ARGS+=("$a") ;;
+  esac
+done
 
 # ── 실행 파일 ────────────────────────────────────────────────────────────
 BIN="$ROOT/target/release/amux-phone"
@@ -67,7 +80,16 @@ fi
 printf '%s' "$IP" > "$LAST_IP_FILE"
 
 # ── 실행 ─────────────────────────────────────────────────────────────────
-printf '  폰에서 열 주소:  http://%s:%s\n' "$IP" "$PORT"
+if [ -n "$SETUP" ]; then
+  printf '  발급자 설치 모드입니다. 이 한 번만 평문 HTTP 로 뜹니다.\n'
+  printf '  폰에서 열 주소:  http://%s:%s/ca.crt\n\n' "$IP" "$PORT"
+  exec "$BIN" --bind "$IP:$PORT" --setup-ca --idle-timeout 0 "${ARGS[@]}"
+fi
+
+# 발급자가 없으면 HTTPS 로 떠 봐야 폰이 경고를 냅니다.
+[ -f "$CA_CERT" ] || die "발급자가 아직 없습니다. 먼저 한 번:  scripts/phone.sh --setup"
+
+printf '  폰에서 열 주소:  https://%s:%s\n' "$IP" "$PORT"
 printf '  이 창을 닫으면 꺼집니다. 30분 동안 아무도 안 쓰면 알아서 닫힙니다.\n\n'
 
-exec "$BIN" --bind "$IP:$PORT" --insecure-plaintext ${SHOW_QR:+$SHOW_QR} "$@"
+exec "$BIN" --bind "$IP:$PORT" --tls ${SHOW_QR:+$SHOW_QR} "${ARGS[@]}"

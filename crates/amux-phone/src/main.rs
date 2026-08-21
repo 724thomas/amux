@@ -10,12 +10,14 @@
 mod api;
 mod auth;
 mod rpc;
+mod tls;
 
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context;
 use clap::Parser;
 use qrcode::render::unicode;
 use qrcode::QrCode;
@@ -54,6 +56,22 @@ struct Cli {
     /// Remove a device by the short id shown by --devices, then exit.
     #[arg(long, value_name = "ID")]
     revoke: Option<String>,
+
+    /// Serve over HTTPS with a certificate issued by this machine's own local
+    /// issuer, created on first use.
+    ///
+    /// Without this the device token — which is a shell on this machine —
+    /// crosses the company network in the clear on every poll.
+    #[arg(long)]
+    tls: bool,
+
+    /// Serve over plain HTTP for one session so the phone can fetch and install
+    /// the local issuer. Creates the issuer if it does not exist yet.
+    ///
+    /// This step cannot itself be over HTTPS: the phone has no way to trust the
+    /// server until it has the very file it is here to collect.
+    #[arg(long, conflicts_with = "tls")]
+    setup_ca: bool,
 
     /// Print a QR of the address (no pairing code) and keep going.
     ///
@@ -109,8 +127,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Binding past loopback hands a shell to everything on that network, over
-    // plaintext. Refuse to do it by accident.
-    if !cli.bind.ip().is_loopback() && !cli.insecure_plaintext {
+    // plaintext. Refuse to do it by accident. With --tls there is no plaintext
+    // to object to, so the flag is not asked for.
+    if !cli.bind.ip().is_loopback() && !cli.tls && !cli.setup_ca && !cli.insecure_plaintext {
         anyhow::bail!(
             "{} 은 loopback 이 아닙니다.\n\
              이 포트를 열면 그 네트워크의 모든 기기가 이 PC 의 셸에 닿을 수 있고, 토큰은 암호화 없이 오갑니다.\n\
@@ -133,12 +152,39 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let last_seen = Arc::new(std::sync::atomic::AtomicU64::new(api::now_secs()));
-    let state = AppState { rpc, auth: auth.clone(), last_seen: last_seen.clone() };
+    // Issue a certificate for the address we are about to answer on. A fresh
+    // leaf every start is what lets the DHCP lease move without the phone ever
+    // being touched again.
+    let ca_dir = tls::default_ca_dir();
+    let (tls_config, ca_pem) = if cli.tls {
+        let ca = tls::Ca::load_or_create(&ca_dir)?;
+        let (chain, key) = ca.issue_for(cli.bind.ip())?;
+        let config = axum_server::tls_rustls::RustlsConfig::from_pem(
+            chain.into_bytes(),
+            key.into_bytes(),
+        )
+        .await
+        .context("loading the issued certificate")?;
+        (Some(config), Some(Arc::new(ca.cert_pem)))
+    } else if cli.setup_ca {
+        let ca = tls::Ca::load_or_create(&ca_dir)?;
+        (None, Some(Arc::new(ca.cert_pem)))
+    } else {
+        // Already-created issuer is still served, so a plain run can hand it over.
+        (None, tls::Ca::load_if_exists(&ca_dir)?.map(|ca| Arc::new(ca.cert_pem)))
+    };
+
+    let state = AppState {
+        rpc,
+        auth: auth.clone(),
+        last_seen: last_seen.clone(),
+        ca_pem,
+    };
     let app = api::router(state);
 
-    let listener = tokio::net::TcpListener::bind(cli.bind).await?;
+    let scheme = if cli.tls { "https" } else { "http" };
     let shown = display_addr(cli.bind);
-    tracing::info!("폰에서 열 주소: http://{shown}");
+    tracing::info!("폰에서 열 주소: {scheme}://{shown}");
     if cli.bind.ip().is_loopback() {
         tracing::info!("지금은 이 PC 에서만 보입니다. 네트워크에 열려면 --bind 0.0.0.0:8000");
     }
@@ -147,12 +193,25 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("이 포트는 지금 네트워크에 열려 있고 통신은 평문입니다 — 신뢰하는 망에서만 쓰세요.");
     }
 
+    if cli.setup_ca {
+        let url = format!("http://{shown}/ca.crt");
+        println!(
+            "\n  ── 발급자 설치 (딱 한 번) ──────────────────────────────\n\
+             \x20 폰에서 아래 주소를 열어 내려받고 설치하세요.\n\
+             \x20 아이폰: 설정 → 일반 → VPN 및 기기 관리 에서 설치한 뒤,\n\
+             \x20         설정 → 일반 → 정보 → 인증서 신뢰 설정 에서 스위치를 켜야 합니다.\n\
+             \x20 안드로이드: 설정 → 보안 → 인증서 설치 → CA 인증서\n\
+             \x20 끝나면 Ctrl+C 하고 --tls 로 다시 띄우세요.\n"
+        );
+        print_qr(&url, None);
+    }
+
     if cli.qr {
-        print_qr(&format!("http://{shown}"), None);
+        print_qr(&format!("{scheme}://{shown}"), None);
     }
 
     if cli.pair || auth.device_count() == 0 {
-        tokio::spawn(pairing_loop(auth.clone(), shown.clone()));
+        tokio::spawn(pairing_loop(auth.clone(), shown.clone(), scheme));
     }
 
     if cli.idle_timeout > 0 {
@@ -162,11 +221,14 @@ async fn main() -> anyhow::Result<()> {
 
     // ConnectInfo lets the token gate record which address used a device, so
     // an enrolment the user did not perform leaves a trace.
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await?;
+    let service = app.into_make_service_with_connect_info::<SocketAddr>();
+    match tls_config {
+        Some(config) => axum_server::bind_rustls(cli.bind, config).serve(service).await?,
+        None => {
+            let listener = tokio::net::TcpListener::bind(cli.bind).await?;
+            axum::serve(listener, service).await?
+        }
+    }
     Ok(())
 }
 
@@ -231,7 +293,7 @@ fn stamp(unix: u64) -> String {
 /// Show a fresh six-digit code (and a QR carrying it) once a minute until a
 /// device registers or ten minutes pass. The code only ever appears here, on
 /// the machine's own screen — that is what keeps enrolment physical.
-async fn pairing_loop(auth: Arc<Auth>, shown: String) {
+async fn pairing_loop(auth: Arc<Auth>, shown: String, scheme: &'static str) {
     // The code is printed to this process's terminal. If that terminal is an
     // amux pane, every other agent in the app can read it back with
     // `pane.read_screen` — the screen is not a private channel here.
@@ -250,7 +312,7 @@ async fn pairing_loop(auth: Arc<Auth>, shown: String) {
             return;
         }
         let code = auth.issue_pairing_code();
-        print_qr(&format!("http://{shown}/?code={code}"), Some(&code));
+        print_qr(&format!("{scheme}://{shown}/?code={code}"), Some(&code));
         tokio::time::sleep(Duration::from_secs(60)).await;
     }
     println!("\n페어링 시간이 끝났습니다. 다시 하려면 --pair 로 실행하세요.\n");

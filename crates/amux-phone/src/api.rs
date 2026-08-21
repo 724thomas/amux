@@ -32,6 +32,10 @@ use crate::rpc::{Rpc, RpcError};
 pub struct AppState {
     pub rpc: Rpc,
     pub auth: Arc<Auth>,
+    /// The local issuer's certificate, when running over HTTPS. Served so the
+    /// phone can install it once — without it the phone has no way to fetch the
+    /// very thing it needs in order to trust this server.
+    pub ca_pem: Option<Arc<String>>,
     /// Unix seconds of the last request. The idle shutdown in `main` watches
     /// this so a session forgotten after lunch does not stay open all night.
     pub last_seen: Arc<AtomicU64>,
@@ -47,6 +51,7 @@ pub fn router(state: AppState) -> Router {
     let open = Router::new()
         .route("/api/pair", post(pair))
         .route("/favicon.ico", get(icon))
+        .route("/ca.crt", get(ca_cert))
         .route("/", get(index));
 
     let guarded = Router::new()
@@ -185,6 +190,28 @@ async fn icon() -> Response {
         include_str!("web/icon.svg"),
     )
         .into_response()
+}
+
+/// Hand out the issuer certificate for the one-time install on the phone.
+///
+/// Unauthenticated on purpose: it is a public key, it grants nothing on its
+/// own, and requiring a token here would be circular — the phone cannot reach
+/// an HTTPS server it does not yet trust.
+async fn ca_cert(State(state): State<AppState>) -> Response {
+    match state.ca_pem {
+        Some(pem) => (
+            [
+                (header::CONTENT_TYPE, "application/x-x509-ca-cert"),
+                (
+                    header::CONTENT_DISPOSITION,
+                    "attachment; filename=\"amux-phone-ca.crt\"",
+                ),
+            ],
+            pem.to_string(),
+        )
+            .into_response(),
+        None => fail(StatusCode::NOT_FOUND, "no_ca").into_response(),
+    }
 }
 
 async fn me(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {

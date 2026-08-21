@@ -24,3 +24,9 @@ clap = { version = "4.5", features = ["derive"] }
 interprocess = { version = "2", features = ["tokio"] }
 # Terminal QR for the one-time pairing code — no image backend needed.
 qrcode = { version = "0.14", default-features = false }
+# HTTPS. The certificate is issued here rather than shelling out to openssl:
+# the SAN and name-constraint fields are fiddly to express in an openssl config,
+# and this keeps working on Windows where amux also runs.
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rcgen = "0.14"
+time = "0.3"
