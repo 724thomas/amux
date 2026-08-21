@@ -44,8 +44,9 @@ IP="$(ip -4 route get 1.1.1.1 2>/dev/null \
       | awk '{for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit } }')"
 [ -n "$IP" ] || die "네트워크에 연결되어 있지 않은 것 같습니다."
 
-# 사내망은 10.0.0.0/8 입니다. 카페나 집(대개 192.168.x)에서 실수로 포트를 여는
-# 사고를 여기서 막습니다 — 방화벽 규칙도 10.8.0.0/24 로만 열려 있습니다.
+# 사내망은 10.0.0.0/8(RFC 1918 사설 대역) 안에 있습니다. 카페나 집(대개
+# 192.168.x)에서 실수로 포트를 여는 사고를 여기서 막습니다. 방화벽 규칙도
+# 접속하는 기기의 대역에만 열어 두는 것이 전제입니다.
 case "$IP" in
   10.*) ;;
   *) die "회사망이 아닙니다 (현재 주소 $IP). 사내에서만 실행하세요." ;;
@@ -62,7 +63,10 @@ if grep -qi '^ENABLED=yes' /etc/ufw/ufw.conf 2>/dev/null; then
   if [ -r /var/log/ufw.log ] &&
      tail -n 2000 /var/log/ufw.log 2>/dev/null | grep -q "DPT=$PORT "; then
     printf '  참고: 최근에 %s 포트로 오던 접속이 방화벽에 막힌 기록이 있습니다.\n' "$PORT"
-    printf '        안 되면:  sudo ufw allow from 10.8.0.0/24 to any port %s proto tcp\n\n' "$PORT"
+    printf '        안 되면 접속하는 기기의 대역만 여세요:\n'
+    printf '          sudo ufw allow from <그 대역>/24 to any port %s proto tcp\n' "$PORT"
+    printf '        대역을 모르면 차단 로그의 SRC 값을 보면 됩니다:\n'
+    printf '          sudo grep "DPT=%s" /var/log/ufw.log | tail -1\n\n' "$PORT"
   fi
 fi
 
@@ -73,8 +77,10 @@ if [ -f "$LAST_IP_FILE" ]; then
   PREV="$(cat "$LAST_IP_FILE")"
   if [ "$PREV" != "$IP" ]; then
     printf '  주소가 지난번과 다릅니다 (이전 %s → 지금 %s).\n' "$PREV" "$IP"
-    printf '  폰 북마크가 안 열릴 테니 아래 QR 을 다시 찍으세요.\n'
-    SHOW_QR="--qr"
+    printf '  브라우저는 주소가 다르면 다른 사이트로 보므로 폰에 저장된 등록도 함께 날아갑니다.\n'
+    printf '  그래서 QR 과 페어링 코드를 같이 띄웁니다. 아래 QR 을 다시 찍으세요.\n'
+    # --qr 만 주면 폰은 코드를 요구하는데 PC 에는 코드가 안 떠서 막다른 골목이 된다.
+    SHOW_QR="--qr --pair"
   fi
 fi
 printf '%s' "$IP" > "$LAST_IP_FILE"

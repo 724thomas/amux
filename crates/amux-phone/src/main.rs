@@ -155,6 +155,18 @@ async fn main() -> anyhow::Result<()> {
     // Issue a certificate for the address we are about to answer on. A fresh
     // leaf every start is what lets the DHCP lease move without the phone ever
     // being touched again.
+    // A certificate has to name an address, and 0.0.0.0 is not one - it means
+    // "every interface". Issuing for it produces a certificate no client can
+    // match, which shows up on the phone as an error while the address printed
+    // here looks perfectly right.
+    if cli.tls && cli.bind.ip().is_unspecified() {
+        anyhow::bail!(
+            "--tls 는 구체적인 주소가 필요합니다 ({} 은 \"모든 인터페이스\"라는 뜻이라 인증서가 보증할 이름이 없습니다).\n\
+             scripts/phone.sh 를 쓰면 현재 주소를 알아서 찾아 넘깁니다.",
+            cli.bind.ip()
+        );
+    }
+
     let ca_dir = tls::default_ca_dir();
     let (tls_config, ca_pem) = if cli.tls {
         let ca = tls::Ca::load_or_create(&ca_dir)?;
@@ -213,7 +225,11 @@ async fn main() -> anyhow::Result<()> {
         print_qr(&format!("{scheme}://{shown}"), None);
     }
 
-    if cli.pair || auth.device_count() == 0 {
+    // Not while handing over the issuer. That session is plaintext by
+    // necessity, and pairing there would put the device token - which is a
+    // shell on this machine - into a plaintext response body. Collect the
+    // certificate first, then pair once the door is HTTPS.
+    if (cli.pair || auth.device_count() == 0) && !cli.setup_ca {
         tokio::spawn(pairing_loop(auth.clone(), shown.clone(), scheme));
     }
 

@@ -89,10 +89,11 @@ impl Ca {
 
         let key = KeyPair::generate().context("generating the server key")?;
         let mut params = CertificateParams::default();
-        params
-            .distinguished_name
-            .push(DnType::CommonName, ip.to_string());
-        // Modern browsers ignore the common name entirely and read this.
+        // A name that cannot be read as a host name. Verifiers read the subject alternative
+        // name below and ignore the common name, but OpenSSL still treats a
+        // common name as a candidate host name when matching DNS constraints -
+        // so putting the address there made the issuer's blanket DNS exclusion
+        // reject its own server certificates.
         params.subject_alt_names = vec![SanType::IpAddress(ip)];
         params.use_authority_key_identifier_extension = true;
         params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
@@ -128,6 +129,12 @@ fn ca_params() -> CertificateParams {
     ];
     // Vouching for the office range and nothing else: a phone that trusts this
     // issuer has not given this laptop authority over the rest of the internet.
+    //
+    // Both halves are needed. A constraint binds only the *name form* it names,
+    // and a form left unmentioned stays unrestricted - so permitting IP ranges
+    // alone would still let this issuer sign `bank.example.com`, because that is
+    // a DNS name and no DNS rule was stated. The empty entries below exclude
+    // every name of those forms, which is what closes that door.
     params.name_constraints = Some(NameConstraints {
         permitted_subtrees: vec![
             GeneralSubtree::IpAddress(CidrSubnet::V4([10, 0, 0, 0], [255, 0, 0, 0])),
@@ -135,7 +142,13 @@ fn ca_params() -> CertificateParams {
             // itself. A phone's own 127.0.0.1 is the phone; nothing is opened up.
             GeneralSubtree::IpAddress(CidrSubnet::V4([127, 0, 0, 0], [255, 0, 0, 0])),
         ],
-        excluded_subtrees: vec![],
+        excluded_subtrees: vec![
+            // An empty name matches every name of that form, so this excludes
+            // DNS names outright. Only DNS is excluded: an empty rfc822Name
+            // entry was tried and rejected every certificate this issuer signs,
+            // including its own server ones, so it buys nothing here.
+            GeneralSubtree::DnsName(String::new()),
+        ],
     });
     params
 }
