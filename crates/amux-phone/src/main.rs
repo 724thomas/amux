@@ -55,6 +55,14 @@ struct Cli {
     #[arg(long, value_name = "ID")]
     revoke: Option<String>,
 
+    /// Print a QR of the address (no pairing code) and keep going.
+    ///
+    /// A phone that is already paired only needs the address, and the address
+    /// moves when the DHCP lease does. Re-scanning is faster than retyping an
+    /// IP into a phone browser.
+    #[arg(long)]
+    qr: bool,
+
     /// Shut down after this many minutes with no request (0 disables).
     ///
     /// This is a door to a shell, and the usual session is "start it, walk to
@@ -139,6 +147,10 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("이 포트는 지금 네트워크에 열려 있고 통신은 평문입니다 — 신뢰하는 망에서만 쓰세요.");
     }
 
+    if cli.qr {
+        print_qr(&format!("http://{shown}"), None);
+    }
+
     if cli.pair || auth.device_count() == 0 {
         tokio::spawn(pairing_loop(auth.clone(), shown.clone()));
     }
@@ -161,6 +173,27 @@ async fn main() -> anyhow::Result<()> {
 /// `1787211417` → `08-20 16:36`. A device list is read to answer "is that one
 /// mine, and when did it last call" — an epoch number cannot answer either.
 /// Civil date from days-since-epoch, so no date crate is pulled in for this.
+/// Show a URL as a scannable block, with the pairing code spelled out beneath
+/// it when there is one — a camera may fail where six digits typed by hand will
+/// not.
+fn print_qr(url: &str, code: Option<&str>) {
+    let caption = match code {
+        Some(c) => format!("  페어링 코드 {c}  (60초)\n  {url}"),
+        None => format!("  {url}"),
+    };
+    match QrCode::new(url.as_bytes()) {
+        Ok(qr) => println!(
+            "\n{}\n{caption}\n",
+            qr.render::<unicode::Dense1x2>()
+                .quiet_zone(true)
+                .dark_color(unicode::Dense1x2::Light)
+                .light_color(unicode::Dense1x2::Dark)
+                .build()
+        ),
+        Err(e) => println!("\n{caption}\n  (QR 생성 실패: {e})\n"),
+    }
+}
+
 /// Close the door when nobody has come through it for a while.
 async fn idle_shutdown(last_seen: Arc<std::sync::atomic::AtomicU64>, minutes: u64) {
     let limit = minutes * 60;
@@ -217,18 +250,7 @@ async fn pairing_loop(auth: Arc<Auth>, shown: String) {
             return;
         }
         let code = auth.issue_pairing_code();
-        let url = format!("http://{shown}/?code={code}");
-        match QrCode::new(url.as_bytes()) {
-            Ok(qr) => println!(
-                "\n{}\n  페어링 코드 {code}  (60초)\n  {url}\n",
-                qr.render::<unicode::Dense1x2>()
-                    .quiet_zone(true)
-                    .dark_color(unicode::Dense1x2::Light)
-                    .light_color(unicode::Dense1x2::Dark)
-                    .build()
-            ),
-            Err(e) => println!("\n  페어링 코드 {code}  (60초)\n  {url}\n  (QR 생성 실패: {e})\n"),
-        }
+        print_qr(&format!("http://{shown}/?code={code}"), Some(&code));
         tokio::time::sleep(Duration::from_secs(60)).await;
     }
     println!("\n페어링 시간이 끝났습니다. 다시 하려면 --pair 로 실행하세요.\n");
