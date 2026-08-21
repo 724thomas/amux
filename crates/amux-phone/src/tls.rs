@@ -30,6 +30,17 @@ const LEAF_DAYS: i64 = 60;
 /// The issuer has to outlive many leaves, or the phone needs re-enrolling.
 const CA_YEARS: i64 = 10;
 
+/// Bumped whenever `ca_params()` changes in a way that matters for safety.
+///
+/// An issuer already on disk is reused as-is, and it has to be: the phone
+/// trusts that exact certificate, so quietly replacing it would break every
+/// paired device. But that also means a fix to `ca_params()` reaches only
+/// issuers created afterwards. Recording the schema an issuer was built with
+/// is what lets us notice, and say so, instead of letting an old one look
+/// current. Version 2 added the blanket DNS exclusion; a version 1 issuer can
+/// sign a certificate for any domain name.
+const CA_SCHEMA: u32 = 2;
+
 pub struct Ca {
     pub cert_pem: String,
     key_pem: String,
@@ -56,6 +67,7 @@ impl Ca {
         let key_path = dir.join("ca.key");
 
         if cert_path.exists() && key_path.exists() {
+            warn_if_outdated(dir);
             return Ok(Self {
                 cert_pem: std::fs::read_to_string(&cert_path)?,
                 key_pem: std::fs::read_to_string(&key_path)?,
@@ -73,6 +85,7 @@ impl Ca {
 
         write_private(dir, &cert_path, cert_pem.as_bytes(), 0o644)?;
         write_private(dir, &key_path, key_pem.as_bytes(), 0o600)?;
+        let _ = std::fs::write(dir.join("ca.schema"), CA_SCHEMA.to_string());
         tracing::info!("발급자를 새로 만들었습니다: {}", cert_path.display());
 
         Ok(Self { cert_pem, key_pem })
@@ -112,6 +125,32 @@ impl Ca {
             key.serialize_pem(),
         ))
     }
+}
+
+/// An issuer built before a safety fix keeps working and keeps being trusted,
+/// which is exactly why it must not pass unmentioned.
+fn warn_if_outdated(dir: &Path) {
+    let found: u32 = std::fs::read_to_string(dir.join("ca.schema"))
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(1);
+    if found >= CA_SCHEMA {
+        return;
+    }
+    println!(
+        "\n  ── 발급자가 오래된 형식입니다 (v{found}, 지금은 v{CA_SCHEMA}) ─────────────\n\
+         \x20 이 발급자는 IP 만 제한하고 도메인 이름은 제한하지 않습니다. 즉 이 발급자를\n\
+         \x20 신뢰하는 기기에 대해서는 임의의 도메인을 사칭하는 인증서를 만들 수 있습니다.\n\
+         \x20 코드는 고쳐졌지만 이미 만들어진 발급자 파일은 바뀌지 않습니다.\n\
+         \x20\n\
+         \x20 고치려면 발급자를 새로 만들고 폰에 다시 설치해야 합니다.\n\
+         \x20   1) rm {}/ca.crt {}/ca.key\n\
+         \x20   2) scripts/phone.sh --setup   (새 발급자를 만들어 폰에 넘깁니다)\n\
+         \x20   3) 폰에서 옛 발급자를 삭제한 뒤 새 것을 설치\n\
+         \x20   4) scripts/phone.sh          (주소가 그대로면 기기 등록은 그대로 살아 있습니다)\n",
+        dir.display(),
+        dir.display()
+    );
 }
 
 /// How the issuer describes itself. Used both when creating it and when
