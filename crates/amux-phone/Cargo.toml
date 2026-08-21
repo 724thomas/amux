@@ -30,3 +30,6 @@ qrcode = { version = "0.14", default-features = false }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 rcgen = "0.14"
 time = "0.3"
+# 발급자 지문을 화면에 찍어 폰 설치 화면의 값과 눈으로 대조하게 하려고.
+sha2 = "0.10"
+base64 = "0.22"

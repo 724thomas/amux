@@ -167,6 +167,19 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // 서명은 어차피 되지만, 발급자가 보증하지 못하는 이름이면 모든 클라이언트가
+    // 거부합니다. 이 PC 에서는 멀쩡해 보이고 폰에서만 오류가 나는 형태라, 뜨기
+    // 전에 막습니다. IPv6 도 여기서 걸립니다 - 허용 범위가 IPv4 뿐입니다.
+    if cli.tls && !tls::covers(cli.bind.ip()) {
+        anyhow::bail!(
+            "{} 은 이 발급자가 보증할 수 있는 범위 밖입니다.\n\
+             발급자는 10.0.0.0/8 과 127.0.0.0/8 만 보증하도록 제한돼 있어서, 그 밖의 주소로\n\
+             인증서를 찍으면 폰이 거부합니다. 사내 주소나 loopback 으로 바인딩하세요.",
+            cli.bind.ip()
+        );
+    }
+
+    let mut ca_fingerprint: Option<String> = None;
     let ca_dir = tls::default_ca_dir();
     let (tls_config, ca_pem) = if cli.tls {
         let ca = tls::Ca::load_or_create(&ca_dir)?;
@@ -180,6 +193,7 @@ async fn main() -> anyhow::Result<()> {
         (Some(config), Some(Arc::new(ca.cert_pem)))
     } else if cli.setup_ca {
         let ca = tls::Ca::load_or_create(&ca_dir)?;
+        ca_fingerprint = Some(ca.fingerprint());
         (None, Some(Arc::new(ca.cert_pem)))
     } else {
         // Already-created issuer is still served, so a plain run can hand it over.
@@ -192,7 +206,14 @@ async fn main() -> anyhow::Result<()> {
         last_seen: last_seen.clone(),
         ca_pem,
     };
-    let app = api::router(state);
+    // 설치 모드는 평문일 수밖에 없으므로, 인증이 필요한 경로를 아예 달지 않습니다.
+    // 등록만 막는 것으로는 부족합니다 - 평문 시절에 받아 둔 토큰을 아직 들고 있는
+    // 폰이 그 세션 동안 화면을 평문으로 계속 받아 갈 수 있기 때문입니다.
+    let app = if cli.setup_ca {
+        api::setup_router(state)
+    } else {
+        api::router(state)
+    };
 
     let scheme = if cli.tls { "https" } else { "http" };
     let shown = display_addr(cli.bind);
@@ -219,6 +240,13 @@ async fn main() -> anyhow::Result<()> {
              \x20 해야 하니 그때는 --pair 를 붙이세요.\n"
         );
         print_qr(&url, None);
+        if let Some(pem) = ca_fingerprint.as_deref() {
+            println!(
+                "  설치 화면에 뜨는 지문이 아래와 같은지 눈으로 대조하세요.\n\
+                 \x20 다르면 중간에서 바꿔치기된 것이니 설치하지 마십시오.\n\n\
+                 \x20 SHA-256  {pem}\n"
+            );
+        }
     }
 
     if cli.qr {
@@ -231,6 +259,16 @@ async fn main() -> anyhow::Result<()> {
     // certificate first, then pair once the door is HTTPS.
     if (cli.pair || auth.device_count() == 0) && !cli.setup_ca {
         tokio::spawn(pairing_loop(auth.clone(), shown.clone(), scheme));
+    }
+
+    // 설치 모드는 평문이므로 오래 떠 있으면 안 됩니다. 안내를 읽고 폰에서
+    // 설치하는 데 필요한 만큼만 두고 스스로 닫습니다.
+    if cli.setup_ca {
+        tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(15 * 60)).await;
+            println!("\n설치 모드는 15분만 열려 있습니다. 종료합니다.\n");
+            std::process::exit(0);
+        });
     }
 
     if cli.idle_timeout > 0 {

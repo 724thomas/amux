@@ -45,6 +45,24 @@ pub fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// The handover session, and nothing else.
+///
+/// Only two paths: the page and the issuer certificate. Everything that needs a
+/// token is left off entirely rather than merely guarded, because this session
+/// runs in the clear - a phone still holding a token from the plaintext days
+/// would otherwise keep polling screens over it while the user is only trying
+/// to install a certificate.
+pub fn setup_router(state: AppState) -> Router {
+    Router::new()
+        .route("/", get(index))
+        .route("/favicon.ico", get(icon))
+        .route("/ca.crt", get(ca_cert))
+        .layer(middleware::from_fn(no_store))
+        .layer(middleware::from_fn(host_guard))
+        .layer(middleware::from_fn_with_state(state.clone(), access_log))
+        .with_state(state)
+}
+
 pub fn router(state: AppState) -> Router {
     // Pairing is the one unauthenticated route — it is how a device becomes
     // authenticated in the first place — so it sits outside the guard.

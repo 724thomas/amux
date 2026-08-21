@@ -91,6 +91,36 @@ impl Ca {
         Ok(Self { cert_pem, key_pem })
     }
 
+    /// SHA-256 over the issuer's DER, formatted the way install screens show it.
+    ///
+    /// The issuer is handed to the phone over plaintext HTTP, which protects it
+    /// from being read but not from being swapped. A swapped issuer is worse
+    /// than a stolen token: the phone would trust someone else's authority for
+    /// ten years. Comparing this string against what the phone displays before
+    /// tapping install is what moves that step off the network and onto two
+    /// screens the user can see at once.
+    pub fn fingerprint(&self) -> String {
+        use base64::Engine as _;
+        use sha2::{Digest, Sha256};
+
+        let body: String = self
+            .cert_pem
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .collect();
+        let der = base64::engine::general_purpose::STANDARD
+            .decode(body.trim())
+            .unwrap_or_default();
+        Sha256::digest(&der)
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .chunks(8)
+            .map(|c| c.join(" "))
+            .collect::<Vec<_>>()
+            .join("\n                 ")
+    }
+
     /// Mint a certificate for the address we are about to listen on.
     pub fn issue_for(&self, ip: IpAddr) -> anyhow::Result<(String, String)> {
         // The issuer is rebuilt from the same description used to create it,
@@ -102,11 +132,17 @@ impl Ca {
 
         let key = KeyPair::generate().context("generating the server key")?;
         let mut params = CertificateParams::default();
-        // A name that cannot be read as a host name. Verifiers read the subject alternative
-        // name below and ignore the common name, but OpenSSL still treats a
-        // common name as a candidate host name when matching DNS constraints -
-        // so putting the address there made the issuer's blanket DNS exclusion
-        // reject its own server certificates.
+        // Spelled out rather than left to the library's default. Verifiers read
+        // the subject alternative name below and ignore the common name, but
+        // OpenSSL still treats a common name as a candidate host name when
+        // matching DNS constraints - putting the address here made the issuer's
+        // blanket DNS exclusion reject its own server certificates. The spaces
+        // are what keep this from parsing as a host name, so it must not be
+        // inherited from elsewhere: if it silently became host-shaped, every
+        // certificate this issuer signs would start failing.
+        params
+            .distinguished_name
+            .push(DnType::CommonName, "amux phone server");
         params.subject_alt_names = vec![SanType::IpAddress(ip)];
         params.use_authority_key_identifier_extension = true;
         params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
@@ -190,6 +226,24 @@ fn ca_params() -> CertificateParams {
         ],
     });
     params
+}
+
+/// Would this issuer be willing to vouch for this address?
+///
+/// Signing happens whether or not the answer is yes - name constraints bind the
+/// verifier, not the signer - so an address outside the permitted set yields a
+/// certificate that every client rejects. On the machine running the server
+/// nothing looks wrong; the failure appears only on the phone. Answering the
+/// question before binding is what turns that into a startup error. IPv6 lands
+/// here too: the permitted set is IPv4 only, so an IPv6 bind is out of range.
+pub fn covers(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            o[0] == 10 || o[0] == 127
+        }
+        IpAddr::V6(_) => false,
+    }
 }
 
 pub fn default_ca_dir() -> PathBuf {
