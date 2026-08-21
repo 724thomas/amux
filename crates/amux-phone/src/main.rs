@@ -54,6 +54,14 @@ struct Cli {
     /// Remove a device by the short id shown by --devices, then exit.
     #[arg(long, value_name = "ID")]
     revoke: Option<String>,
+
+    /// Shut down after this many minutes with no request (0 disables).
+    ///
+    /// This is a door to a shell, and the usual session is "start it, walk to
+    /// lunch, come back" — so forgetting to stop it is the normal mistake, not
+    /// an unusual one. Closing itself is the default for that reason.
+    #[arg(long, value_name = "MINUTES", default_value = "30")]
+    idle_timeout: u64,
 }
 
 #[tokio::main]
@@ -116,7 +124,8 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => tracing::warn!("amux 에 아직 연결하지 못했습니다 — {e}. 앱이 뜨면 이어집니다."),
     }
 
-    let state = AppState { rpc, auth: auth.clone() };
+    let last_seen = Arc::new(std::sync::atomic::AtomicU64::new(api::now_secs()));
+    let state = AppState { rpc, auth: auth.clone(), last_seen: last_seen.clone() };
     let app = api::router(state);
 
     let listener = tokio::net::TcpListener::bind(cli.bind).await?;
@@ -134,6 +143,11 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(pairing_loop(auth.clone(), shown.clone()));
     }
 
+    if cli.idle_timeout > 0 {
+        tracing::info!("{}분 동안 요청이 없으면 스스로 종료합니다 (--idle-timeout 0 으로 끔)", cli.idle_timeout);
+        tokio::spawn(idle_shutdown(last_seen, cli.idle_timeout));
+    }
+
     // ConnectInfo lets the token gate record which address used a device, so
     // an enrolment the user did not perform leaves a trace.
     axum::serve(
@@ -147,6 +161,19 @@ async fn main() -> anyhow::Result<()> {
 /// `1787211417` → `08-20 16:36`. A device list is read to answer "is that one
 /// mine, and when did it last call" — an epoch number cannot answer either.
 /// Civil date from days-since-epoch, so no date crate is pulled in for this.
+/// Close the door when nobody has come through it for a while.
+async fn idle_shutdown(last_seen: Arc<std::sync::atomic::AtomicU64>, minutes: u64) {
+    let limit = minutes * 60;
+    loop {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        let idle = api::now_secs().saturating_sub(last_seen.load(std::sync::atomic::Ordering::Relaxed));
+        if idle >= limit {
+            println!("\n{minutes}분 동안 아무 요청이 없어 종료합니다. 다시 필요하면 같은 명령으로 띄우세요.\n");
+            std::process::exit(0);
+        }
+    }
+}
+
 fn stamp(unix: u64) -> String {
     if unix == 0 {
         return "-".into();

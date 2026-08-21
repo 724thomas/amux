@@ -10,6 +10,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use amux_protocol::{rpc_codes, PaneInfo, WorkspaceInfo};
 use axum::{
@@ -30,6 +32,13 @@ use crate::rpc::{Rpc, RpcError};
 pub struct AppState {
     pub rpc: Rpc,
     pub auth: Arc<Auth>,
+    /// Unix seconds of the last request. The idle shutdown in `main` watches
+    /// this so a session forgotten after lunch does not stay open all night.
+    pub last_seen: Arc<AtomicU64>,
+}
+
+pub fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 pub fn router(state: AppState) -> Router {
@@ -50,7 +59,7 @@ pub fn router(state: AppState) -> Router {
     open.merge(guarded)
         .layer(middleware::from_fn(no_store))
         .layer(middleware::from_fn(host_guard))
-        .layer(middleware::from_fn(access_log))
+        .layer(middleware::from_fn_with_state(state.clone(), access_log))
         .with_state(state)
 }
 
@@ -75,10 +84,12 @@ async fn no_store(request: Request, next: Next) -> Response {
 /// firewall drop and a network that does not route look identical from the
 /// phone — one line here tells them apart.
 async fn access_log(
+    State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: Request,
     next: Next,
 ) -> Response {
+    state.last_seen.store(now_secs(), Ordering::Relaxed);
     let method = request.method().clone();
     let path = request.uri().path().to_string();
     let response = next.run(request).await;
