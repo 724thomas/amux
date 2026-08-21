@@ -46,6 +46,7 @@ pub fn router(state: AppState) -> Router {
     // authenticated in the first place — so it sits outside the guard.
     let open = Router::new()
         .route("/api/pair", post(pair))
+        .route("/favicon.ico", get(icon))
         .route("/", get(index));
 
     let guarded = Router::new()
@@ -171,6 +172,17 @@ async fn index() -> Response {
     (
         [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
         include_str!("web/index.html"),
+    )
+        .into_response()
+}
+
+/// The browser asks for this on its own, and a home-screen shortcut shows it.
+/// Serving it here also stops the token gate from answering 401 to a request
+/// nobody authenticated — that reads as a failure in the log when it is not.
+async fn icon() -> Response {
+    (
+        [(header::CONTENT_TYPE, "image/svg+xml")],
+        include_str!("web/icon.svg"),
     )
         .into_response()
 }
