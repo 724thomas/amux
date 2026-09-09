@@ -7,20 +7,24 @@
 //! Wayland and X11.
 
 use amux_protocol::NotifyKind;
-use notify_rust::{Notification, Urgency};
+use notify_rust::Notification;
+#[cfg(not(target_os = "macos"))]
+use notify_rust::Urgency;
 
 pub fn send_desktop(kind: NotifyKind, title: &str, body: &str) {
-    let urgency = match kind {
+    let mut notification = Notification::new();
+    notification.appname("amux").summary(title).body(body);
+    // Urgency maps to XDG notification levels (Linux/BSD). macOS has no
+    // equivalent and notify-rust does not expose `.urgency()` there, so the
+    // priority is simply dropped on macOS.
+    #[cfg(not(target_os = "macos"))]
+    notification.urgency(match kind {
         NotifyKind::Attention => Urgency::Critical,
         NotifyKind::Done | NotifyKind::Progress => Urgency::Normal,
         NotifyKind::Bell | NotifyKind::Idle => Urgency::Low,
-    };
-    let mut notification = Notification::new();
-    notification
-        .appname("amux")
-        .summary(title)
-        .body(body)
-        .urgency(urgency);
+    });
+    #[cfg(target_os = "macos")]
+    let _ = kind;
     // DBus can block; never stall the PTY read thread on it.
     let _ = std::thread::Builder::new().name("notify-dispatch".into()).spawn(move || {
         if let Err(e) = notification.show() {

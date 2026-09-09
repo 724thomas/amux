@@ -215,6 +215,25 @@ Releases에서 윈도우 설치본(`amux_0.5.0_x64-setup.exe` 형태)을 받아 
 없어, `v*` 태그를 푸시하면 GitHub Actions의 windows-latest 러너가 자동으로 빌드해 같은
 릴리스에 첨부합니다.)
 
+**macOS (Apple Silicon/Intel)** — 소스에서 빌드:
+
+먼저 도구를 설치합니다 — Rust([rustup](https://rustup.rs))와 bun(`brew install oven-sh/bun/bun`),
+그리고 Xcode Command Line Tools(`xcode-select --install`). 그 다음:
+
+```bash
+scripts/install-macos.sh
+```
+
+이 스크립트가 프론트엔드·`amux.app`·`amux` CLI를 빌드해 `amux.app`을 `/Applications`에,
+`amux` CLI를 PATH(`/usr/local/bin`, `AMUX_BIN_DIR`로 변경 가능)에 설치합니다. 빌드만
+하려면 `scripts/install-macos.sh --build-only` (산출물: `target/release/bundle/`).
+
+- pane의 현재 디렉토리·git 브랜치·리슨 포트 표시는 리눅스의 `/proc` 대신 macOS
+  `libproc`로 동일하게 동작합니다.
+- 서명 없는 앱이라 첫 실행은 우클릭 → **열기**, 또는:
+  `xattr -dr com.apple.quarantine /Applications/amux.app`
+- 데스크톱 알림은 macOS 알림 센터로 전달됩니다(우선순위 단계는 macOS엔 없어 무시).
+
 ## 사용법
 
 ### 화면 구성
@@ -382,19 +401,22 @@ amux read-screen p-3fa2c1        # 다른 pane 화면 읽기
 amux notify --kind done --title 빌드 --body 완료
 ```
 
-소켓: `$XDG_RUNTIME_DIR/amux/amux.sock`, NDJSON JSON-RPC 2.0 (`socat`으로 디버깅 가능).
+소켓: `$XDG_RUNTIME_DIR/amux/amux.sock` (macOS엔 `XDG_RUNTIME_DIR`가 없어 `/tmp/amux-$UID/amux.sock`로
+폴백), NDJSON JSON-RPC 2.0 (`socat`으로 디버깅 가능).
 
 ## 개발
 
 ```bash
-# 요구: rustup, bun, libwebkit2gtk-4.1-dev 등 Tauri 의존성
+# 요구: rustup, bun, + Tauri 의존성
+#   리눅스: libwebkit2gtk-4.1-dev 등 / macOS: Xcode Command Line Tools
 bun install
 bun run tauri dev        # 개발 실행 (HMR)
 cargo test --workspace   # Rust 테스트
-bun run tauri build      # 릴리스 + .deb 번들
+bun run tauri build      # 릴리스 번들 (리눅스=.deb, macOS=.app/.dmg, 윈도우=NSIS)
 ```
 
 > ⚠️ 패키징 전 `cargo build --release -p amux-cli` 필요 — `.deb`이
-> `target/release/amux`를 `/usr/bin/amux`로 동봉합니다.
+> `target/release/amux`를 `/usr/bin/amux`로 동봉합니다. macOS는
+> `scripts/install-macos.sh`가 이 빌드와 CLI 설치까지 대신합니다.
 
 구조: `crates/amux-protocol`(공유 타입) / `crates/amux-core`(엔진: PTY·터미널 상태·알림·소켓 서버) / `crates/amux-cli`(CLI) / `src-tauri`(앱 셸) / `src`(Svelte UI).
