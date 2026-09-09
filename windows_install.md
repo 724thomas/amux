@@ -6,6 +6,10 @@
 > 코드가 윈도우에서도 빌드되도록 이미 크로스플랫폼화되어 있습니다. 당신(윈도우 Claude)의
 > 일은 ① 빌드 도구 준비 → ② 빌드 → ③ 실행, 그리고 혹시 컴파일이 막히면 아래 "검증됨 vs
 > 미검증" 지도를 보고 고치는 것입니다.
+>
+> **다른 OS 문서**: macOS는 [`macos_install.md`](macos_install.md), Ubuntu는
+> [`ubuntu_install.md`](ubuntu_install.md). (macOS는 이미 실검증되어 cwd/포트까지
+> 채워져 있어, §9-1의 윈도우 cwd/포트 미구현을 채울 때 좋은 참고가 됩니다.)
 
 ---
 
@@ -20,9 +24,8 @@
   §6·§8에 적어뒀습니다.
 - **사람의 승인이 필요한 단계가 있습니다**: 빌드 도구 설치(특히 MSVC)는 관리자 권한(UAC)
   팝업을 띄웁니다. 완전 무인은 아니고, 사용자가 UAC를 한두 번 눌러줘야 합니다.
-- **소스 확보**: 이 윈도우 포팅 변경이 들어간 **브랜치/커밋**을 받아야 합니다. 기존
-  릴리스나 옛 main을 받으면 윈도우 코드가 없습니다. 사용자에게 "이 변경이 포함된 브랜치"를
-  clone 하도록 확인하세요. (아래 §2)
+- **소스 확보**: 윈도우 포팅은 **`main`에 병합**되어 있습니다. `main`을 clone 하면 됩니다.
+  (아래 §2)
 
 ---
 
@@ -88,16 +91,12 @@ winget install --id Git.Git -e
 
 ## 2. 소스 받기
 
-이 **윈도우 포팅 변경이 포함된 브랜치**를 clone 하세요. (사용자에게 정확한 저장소 URL과
-브랜치명을 확인 — 보통 `https://github.com/724thomas/amux.git`)
+윈도우 포팅은 `main`에 있습니다. 그대로 clone 하세요.
 
 ```powershell
 git clone https://github.com/724thomas/amux.git
 cd amux
-# 윈도우 포팅 변경이 별도 브랜치에 있다면:  git checkout <브랜치명>
 ```
-
-> 만약 사용자가 변경분을 아직 push 하지 않았다면, 리눅스 쪽에서 먼저 커밋·push 해야 합니다.
 
 ---
 
@@ -241,7 +240,10 @@ windows job이 실검증)와 **모든 런타임 동작**뿐입니다. 컴파일 
 1. **사이드바의 cwd(작업 폴더)·리슨 포트가 윈도우에선 비어 보입니다.** 이 정보는 리눅스의
    `/proc` 가상 파일시스템에서 읽는데 윈도우엔 `/proc`가 없어, 코드가 그냥 빈 값을 돌려줍니다
    (우아하게 비활성화). git 브랜치는 `.git`을 직접 읽으므로 윈도우에서도 표시됩니다.
-   - **채우고 싶다면 (선택 작업):**
+   - **채우고 싶다면 (선택 작업):** `meta/cwd.rs`·`meta/ports.rs`에는 이미 리눅스
+     `#[cfg(target_os="linux")]`와 **macOS `#[cfg(target_os="macos")]`(libproc)** 분기가
+     나란히 있습니다. 같은 자리에 `#[cfg(windows)]` 분기를 하나 더 넣으면 됩니다 —
+     macOS 분기가 "OS 네이티브 API로 cwd/포트를 채우는" 살아있는 템플릿입니다.
      - cwd: `meta/cwd.rs`에 `#[cfg(windows)]` 분기를 추가하고 `sysinfo` 크레이트의
        `sys.process(Pid).cwd()`로 구현.
      - 리슨 포트: `meta/ports.rs`에 `#[cfg(windows)]` 분기 — `netstat2` 크레이트로 LISTEN

@@ -1,6 +1,6 @@
 # amux
 
-AI 코딩 에이전트(Claude Code 등)를 **병렬로** 돌리기 위한 Ubuntu 데스크톱 터미널.
+AI 코딩 에이전트(Claude Code 등)를 **병렬로** 돌리기 위한 데스크톱 터미널 — **Ubuntu · macOS · Windows**.
 
 <img width="1856" height="1080" alt="image" src="https://github.com/user-attachments/assets/0f635231-9b41-4945-ad60-8dd0414e8d6f" />
 
@@ -22,6 +22,17 @@ AI 코딩 에이전트(Claude Code 등)를 **병렬로** 돌리기 위한 Ubuntu
 ## 변경 내역
 
 ### 미출시 (main)
+- **🍎 macOS 지원** — 원래 Ubuntu 전용이던 앱을 macOS(Apple Silicon)에서도 빌드·실행되도록
+  이식. 코어는 이미 크로스플랫폼(IPC=`interprocess` Unix 소켓, PTY=`portable-pty`)이라,
+  리눅스 `/proc`에 의존하던 메타데이터 수집만 macOS 경로를 새로 붙였다.
+  - `meta/cwd.rs`: macOS는 libproc `proc_pidinfo(PROC_PIDVNODEPATHINFO)`로 pane cwd 조회
+  - `meta/ports.rs`: macOS는 libproc로 부모 PID를 따라 descendant를 BFS(`ProcFilter::ByParentProcess`)
+    → 소켓 fd → TCP LISTEN 포트. git 브랜치는 `.git/HEAD` 직접 읽기라 cwd만 있으면 그대로 동작
+  - `notify.rs`: macOS엔 없는 `.urgency()`를 cfg 게이트(알림은 알림 센터로, 우선순위는 무시)
+  - `src-tauri/tauri.macos.conf.json`(.app/.dmg 타겟) + `scripts/install-macos.sh`(빌드→
+    `/Applications`·PATH 설치). 상세는 [`macos_install.md`](macos_install.md)
+  - 검증: `amux-core` 테스트 24개 통과(PTY 왕복·세션 복원 포함) + macOS cwd/포트 런타임
+    스모크 테스트 + 앱 실행→소켓 기동→CLI로 워크스페이스·탭·pane(zsh) 생성 end-to-end 확인
 - **워크스페이스와 탭 구성이 저장되고, 다음 실행에서 한 번에 복구된다.** amux가
   갑자기 꺼지면(크래시, OOM, 강제 종료) 지금까지는 다시 켰을 때 빈 화면만 남았고,
   워크스페이스 이름부터 탭 이름, 분할 모양까지 전부 손으로 다시 만들어야 했다. 이제
@@ -190,6 +201,11 @@ AI 코딩 에이전트(Claude Code 등)를 **병렬로** 돌리기 위한 Ubuntu
 
 [**Releases**](https://github.com/724thomas/amux/releases)에서 OS에 맞는 설치본을 받습니다.
 
+> **OS별 상세 설치 가이드** — 각 문서는 그 OS에서 도는 Claude(Claude Code)에게 통째로
+> 붙여넣으면 자동으로 설치·빌드·실행하도록 만든 핸드오프 문서입니다:
+> [`ubuntu_install.md`](ubuntu_install.md) · [`macos_install.md`](macos_install.md) ·
+> [`windows_install.md`](windows_install.md)
+
 **리눅스 (Ubuntu/Debian)** — `.deb`:
 
 ```bash
@@ -199,7 +215,7 @@ sudo apt install ./amux_0.5.0_amd64.deb
 
 - GNOME 앱 목록에 **amux** 아이콘 등록, `amux` CLI는 `/usr/bin/amux`로 설치
 - 의존성(webkit2gtk 등)은 apt가 자동 해결
-- 빌드 도구 없이 설치 파일 하나로 끝 — 소스 빌드는 아래 [개발](#개발) 참고
+- 빌드 도구 없이 설치 파일 하나로 끝 — 소스 빌드·상세 안내는 [`ubuntu_install.md`](ubuntu_install.md)
 
 빈 화면이 뜨면 (WebKitGTK + Wayland DMABUF 이슈):
 
@@ -233,6 +249,8 @@ scripts/install-macos.sh
 - 서명 없는 앱이라 첫 실행은 우클릭 → **열기**, 또는:
   `xattr -dr com.apple.quarantine /Applications/amux.app`
 - 데스크톱 알림은 macOS 알림 센터로 전달됩니다(우선순위 단계는 macOS엔 없어 무시).
+
+자가검증·문제 해결·libproc 구현 지도 등 상세 안내는 [`macos_install.md`](macos_install.md).
 
 ## 사용법
 
