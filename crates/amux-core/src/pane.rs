@@ -70,6 +70,13 @@ pub struct Pane {
     /// the final PostToolUse can be delivered just after Stop) and must not
     /// resurrect `processing`.
     pub last_done_at: Mutex<Option<std::time::Instant>>,
+    /// The Claude Code conversation running in this pane, reported by the
+    /// hooks (`amux notify --from-claude-hook`, which reads `session_id` off
+    /// the hook payload). Saved with the layout so a restore can hand the pane
+    /// back the same conversation instead of a bare shell. Deliberately NOT in
+    /// `PaneMeta`: the metadata sweeper rebuilds that struct wholesale from
+    /// /proc every second and would wipe it.
+    pub claude_session: Mutex<Option<String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -163,6 +170,7 @@ impl Pane {
             hook_managed: std::sync::atomic::AtomicBool::new(false),
             turn_active: std::sync::atomic::AtomicBool::new(false),
             last_done_at: Mutex::new(None),
+            claude_session: Mutex::new(None),
         });
 
         // Reader thread: PTY → term state → tail buffer → sink.
@@ -300,6 +308,13 @@ impl Pane {
         {
             None
         }
+    }
+
+    /// Has the pane's process written anything yet? Used as a readiness
+    /// signal after a restore: a shell that has printed its prompt is ready to
+    /// read a command, whereas one still running its rc files may swallow it.
+    pub fn has_output(&self) -> bool {
+        !self.tail.lock().is_empty()
     }
 
     /// Root PID of the shell process spawned at pane creation.

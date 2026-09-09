@@ -144,6 +144,12 @@ pub struct PaneInfo {
     pub notification: Option<PaneNotification>,
     pub status: PaneStatus,
     pub exited: bool,
+    /// Id of the Claude Code conversation running here, as reported by the
+    /// hooks. `None` when no Claude session has announced itself — which is
+    /// also the case for every session that started before the hooks began
+    /// reporting it.
+    #[serde(default)]
+    pub claude_session: Option<String>,
 }
 
 /// One tab: a named screen holding its own split tree. Exactly one tab per
@@ -420,6 +426,16 @@ pub mod methods {
     pub struct PaneSetDoneParams {
         pub pane: String,
         pub done: bool,
+    }
+
+    /// Tell amux which Claude conversation a pane is running. Sent by the
+    /// Claude Code hooks via `amux notify --from-claude-hook`; `session: None`
+    /// clears it.
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct PaneSetClaudeSessionParams {
+        pub pane: String,
+        #[serde(default)]
+        pub session: Option<String>,
     }
 }
 

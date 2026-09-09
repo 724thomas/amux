@@ -30,8 +30,15 @@ def main():
         shutil.copy(SETTINGS, BACKUP)
 
     hooks = settings.setdefault("hooks", {})
-    hooks["SessionStart"] = hook("amux notify --kind idle")
-    hooks["UserPromptSubmit"] = hook("amux notify --kind progress")
+    # --from-claude-hook 은 원래 hook 이 stdin 으로 주는 JSON 에서 사람이 읽을 메시지를
+    # 꺼내려고 붙였는데, 같은 JSON 에 session_id 도 들어 있다. amux 는 그 값을 pane 에
+    # 기록해 두었다가, 나중에 배치를 복구할 때 `claude --resume <id>` 로 그 대화를
+    # 그대로 돌려준다. 그래서 세션 id 가 바뀌는 순간(SessionStart: 시작/재개/clear/
+    # compact)과, 이미 돌던 세션도 잡을 수 있는 순간(UserPromptSubmit)에 붙인다.
+    # PostToolUse 에는 일부러 붙이지 않는다 - 도구 호출마다 불리는데 그 사이에
+    # session_id 가 바뀌지는 않으므로 낭비다.
+    hooks["SessionStart"] = hook("amux notify --kind idle --from-claude-hook")
+    hooks["UserPromptSubmit"] = hook("amux notify --kind progress --from-claude-hook")
     hooks["PostToolUse"] = hook("amux notify --kind progress")
     hooks["Notification"] = hook("amux notify --kind attention --from-claude-hook")
     hooks["Stop"] = hook(

@@ -11,7 +11,10 @@
     palette,
     dashboard,
     activeTabPaneCount,
+    canRestoreSession,
     focusTerm,
+    restoreOffer,
+    restorePreviousSession,
     tabCreate,
     tabHasBadge,
     tabStatus,
@@ -31,6 +34,22 @@
 
   const snapshot = $derived(app.snapshot);
   const bcastCount = $derived(activeTabPaneCount());
+
+  // Restore offer: shown over the empty main area when the previous run left a
+  // saved arrangement behind. Only while nothing is open — once a workspace
+  // exists the card would be covering live terminals, and the palette entry
+  // (Ctrl+Shift+P) takes over as the way in.
+  const offerRestore = $derived(canRestoreSession() && !(snapshot?.workspaces.length ?? 0));
+  const savedAtLabel = $derived.by(() => {
+    const ms = restoreOffer.summary?.saved_at_ms;
+    if (!ms) return "";
+    return new Date(ms).toLocaleString("ko-KR", {
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  });
 
   let draggingSidebar = $state(false);
 
@@ -158,6 +177,67 @@
     ondblclick={() => setSidebarWidth(230)}
   ></div>
   <main class="main">
+    <!-- 지난 세션 복구 카드. 앱이 갑자기 꺼져도 워크스페이스·탭 이름과 분할
+         모양은 디스크에 남아 있으므로, 빈 화면 대신 "한 번에 되살리기"를
+         먼저 제안한다. -->
+    {#if offerRestore && restoreOffer.summary}
+      <div class="restore">
+        <div class="restore-card">
+          <h2>지난 세션이 남아 있습니다</h2>
+          <p class="restore-counts">
+            워크스페이스 {restoreOffer.summary.workspaces}개, 탭 {restoreOffer.summary.tabs}개,
+            터미널 {restoreOffer.summary.panes}개
+          </p>
+          {#if savedAtLabel}
+            <p class="restore-when">마지막 저장 {savedAtLabel}</p>
+          {/if}
+          <p class="restore-note">
+            이름과 탭 구성, 분할 모양이 그대로 돌아옵니다. 터미널은 그때 있던 디렉터리에서 새로
+            열리며, 실행 중이던 프로그램과 화면에 찍혀 있던 내용까지 되살아나지는 않습니다.
+          </p>
+          <div class="restore-prefs">
+            <label>
+              Claude effort
+              <select bind:value={restoreOffer.effort}>
+                <option value={null}>설정 그대로</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+                <option value="max">max</option>
+              </select>
+            </label>
+            <label>
+              대화 재개 방식
+              <select bind:value={restoreOffer.mode}>
+                <option value="ask">직접 고르기</option>
+                <option value="full">전체 세션</option>
+                <option value="summary">요약</option>
+              </select>
+            </label>
+          </div>
+          <p class="restore-note">
+            두 선택은 되살아나는 Claude 창 전부에 똑같이 적용됩니다. 전체 세션은 대화마다 지난
+            내용을 통째로 다시 올리므로 사용량을 그만큼 씁니다.
+          </p>
+          <div class="restore-actions">
+            <button
+              class="restore-go"
+              disabled={restoreOffer.busy}
+              onclick={() => void restorePreviousSession()}
+            >
+              {restoreOffer.busy ? "복구하는 중..." : "한 번에 복구"}
+            </button>
+            <button class="restore-later" onclick={() => (restoreOffer.dismissed = true)}>
+              나중에
+            </button>
+          </div>
+          <p class="restore-hint">
+            나중에 눌러도 Ctrl+Shift+P (명령 팔레트)에서 다시 복구할 수 있습니다.
+          </p>
+        </div>
+      </div>
+    {/if}
     <!-- Every workspace AND every tab stays mounted so its terminals keep
          their xterm buffers and their agents keep running; only the active
          one is displayed. Never unmount — `display: none` only. -->
@@ -294,6 +374,97 @@
   }
   .workspace.hidden {
     display: none;
+  }
+
+  /* 지난 세션 복구 카드 — 워크스페이스가 하나도 없을 때만 빈 화면 가운데에 뜬다. */
+  .restore {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .restore-card {
+    width: min(520px, 100%);
+    padding: 22px 24px 18px;
+    background: var(--surface-3);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+  }
+  .restore-card h2 {
+    margin: 0 0 10px;
+    font-size: 1rem;
+    color: var(--text);
+  }
+  .restore-prefs {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    margin: 10px 0 2px;
+  }
+  .restore-prefs label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    opacity: 0.8;
+    text-align: left;
+  }
+  .restore-prefs select {
+    font: inherit;
+    padding: 3px 6px;
+  }
+  .restore-counts {
+    margin: 0 0 4px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  .restore-when,
+  .restore-hint {
+    margin: 0;
+    font-size: 0.74rem;
+    color: var(--muted);
+  }
+  .restore-note {
+    margin: 12px 0 16px;
+    font-size: 0.78rem;
+    line-height: 1.6;
+    color: var(--muted);
+  }
+  .restore-actions {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .restore-go,
+  .restore-later {
+    padding: 8px 16px;
+    font: inherit;
+    font-size: 0.82rem;
+    border-radius: 7px;
+    cursor: pointer;
+  }
+  .restore-go {
+    font-weight: 700;
+    color: var(--bg);
+    background: var(--accent);
+    border: 1px solid var(--accent);
+  }
+  .restore-go:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+  .restore-later {
+    color: var(--muted);
+    background: transparent;
+    border: 1px solid var(--border);
+  }
+  .restore-later:hover {
+    color: var(--text);
+    background: color-mix(in srgb, var(--text) 10%, transparent);
   }
 
   /* Tab bar — one row per workspace, above its terminals. A tab is the named

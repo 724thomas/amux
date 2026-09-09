@@ -414,9 +414,9 @@
     <button onclick={() => adjustFontSize(1)}>＋</button>
   </div>
 
-  <!-- 직전 명령 표시 토글 (폰트 바로 아래) — 각 pane 안에 마지막으로 보낸
-       명령을 최대 4줄로, 드래그 가능한 칩으로 표시. -->
-  <div class="toggle-control" title="각 pane 안에 직전에 보낸 명령을 최대 4줄로 표시 (칩은 드래그로 위치 이동)">
+  <!-- 직전 명령 표시 토글 (폰트 바로 아래) — 각 pane 맨 위에 마지막으로 보낸
+       명령을 가로 전체 한 줄 띠로 표시. -->
+  <div class="toggle-control" title="각 pane 맨 위에 직전에 보낸 명령을 가로 전체 한 줄로 표시 (길면 끝을 … 로 자르고, 올려두면 전체가 보입니다)">
     <span class="font-label">직전 명령 표시</span>
     <button
       class="switch"

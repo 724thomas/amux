@@ -13,7 +13,7 @@
 //! - `meta`       — cwd / git branch / listening-port sweeper (M2)
 //! - `notify`     — notification policy + desktop dispatch (M4)
 //! - `server`     — NDJSON JSON-RPC Unix-socket server (M3)
-//! - `persist`    — session save/restore (M5)
+//! - `session`    — save/restore of the workspace+tab+split shape (M5)
 
 pub mod engine;
 pub mod layout;
@@ -22,6 +22,7 @@ pub mod notify;
 pub mod osc;
 pub mod pane;
 pub mod server;
+pub mod session;
 pub mod term_state;
 
 pub use engine::{Engine, EngineError, EngineEvent};

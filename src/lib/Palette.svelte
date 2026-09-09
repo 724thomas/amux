@@ -16,9 +16,12 @@
     activeTab,
     activeWorkspace,
     broadcast,
+    canRestoreSession,
     palette,
     focusTerm,
     paneLabel,
+    restoreOffer,
+    restorePreviousSession,
     tabCreate,
     wsCreate,
   } from "./state.svelte";
@@ -99,6 +102,18 @@
       out.push({ kind: "action", label: "오른쪽으로 분할", run: () => void splitPane(ap, "horizontal") });
       out.push({ kind: "action", label: "아래로 분할", run: () => void splitPane(ap, "vertical") });
       out.push({ kind: "action", label: "이 터미널 닫기", run: () => void closePane(ap) });
+    }
+    // The second way into a restore (the first is the card on the empty main
+    // area). Kept here so a user who dismissed the card, or who already opened
+    // a workspace by hand, can still bring the old arrangement back.
+    if (canRestoreSession() && restoreOffer.summary) {
+      const saved = restoreOffer.summary;
+      out.push({
+        kind: "action",
+        label: "↩ 지난 세션 복구",
+        detail: `워크스페이스 ${saved.workspaces}개, 탭 ${saved.tabs}개, 터미널 ${saved.panes}개를 한 번에 되살립니다`,
+        run: () => void restorePreviousSession(),
+      });
     }
     // Route through the sidebar prompt rather than creating one outright, so
     // every entry point asks for the workspace and first-tab names alike.

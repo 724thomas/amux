@@ -4,9 +4,13 @@ import { tick } from "svelte";
 import { listen } from "@tauri-apps/api/event";
 import {
   getSnapshot,
+  restoreSession,
+  type ResumeMode,
+  savedSession,
   type LayoutNode,
   type PaneId,
   type PaneInfo,
+  type SessionSummary,
   type Snapshot,
   type TabInfo,
   type WorkspaceId,
@@ -110,6 +114,48 @@ export async function initState() {
   app.snapshot = await getSnapshot();
   if (app.snapshot) trackStatus(app.snapshot);
   void tick().then(() => focusTerm(activePane()));
+  // What the previous run left behind, if anything — read once, since the
+  // engine's autosave overwrites the file as soon as a workspace exists.
+  restoreOffer.summary = await savedSession();
+}
+
+// --- Previous-session restore ------------------------------------------------
+// amux cannot bring back the *processes* it was running, but it does keep the
+// arrangement: workspace names, tab names, the split shape of each tab and the
+// directory every pane was working in. When the app goes away unexpectedly that
+// shape is still on disk, and this offer puts all of it back in one click.
+// `dismissed` only hides the offer for the rest of this run; the file is left
+// alone, so a later launch can still offer it.
+export const restoreOffer = $state<{
+  summary: SessionSummary | null;
+  dismissed: boolean;
+  busy: boolean;
+  /** Applied to every Claude pane the restore brings back. Both default to
+   *  "leave it as it was": no `--effort` flag, and the resume menu answered by
+   *  the person, because the other choices spend usage limits without a click. */
+  effort: string | null;
+  mode: ResumeMode;
+}>({ summary: null, dismissed: false, busy: false, effort: null, mode: "ask" });
+
+/** Whether the restore card / palette entry should be on offer right now. */
+export function canRestoreSession(): boolean {
+  return restoreOffer.summary !== null && !restoreOffer.dismissed;
+}
+
+/** Rebuild everything the previous session held. Restoring is one-shot: the
+ *  engine forgets the saved session afterwards so a second click cannot
+ *  duplicate every workspace. */
+export async function restorePreviousSession() {
+  if (!restoreOffer.summary || restoreOffer.busy) return;
+  restoreOffer.busy = true;
+  try {
+    await restoreSession({ effort: restoreOffer.effort, mode: restoreOffer.mode });
+    restoreOffer.summary = null;
+  } catch (e) {
+    console.error("지난 세션 복구 실패", e);
+  } finally {
+    restoreOffer.busy = false;
+  }
 }
 
 export function activeWorkspace(): WorkspaceInfo | null {

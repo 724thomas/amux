@@ -1,5 +1,6 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use amux_core::session::{ResumePrefs, SavedSession, SessionSummary};
 use amux_core::Engine;
 use amux_protocol::{PaneId, Snapshot, SplitAxis, TabId, WorkspaceId};
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -14,6 +15,61 @@ fn err(e: impl std::fmt::Display) -> String {
 #[tauri::command]
 pub fn get_snapshot(engine: Eng<'_>) -> Snapshot {
     engine.snapshot()
+}
+
+// -- previous session ---------------------------------------------------------
+
+/// The session found on disk at launch, kept in memory for the restore offer.
+///
+/// Read exactly once, at startup, and never re-read: the autosave overwrites
+/// the file as soon as the user opens their first workspace, and the offer has
+/// to outlive that. Emptied after a successful restore, because restoring the
+/// same session twice would duplicate every workspace in it.
+pub struct PreviousSession(Mutex<Option<SavedSession>>);
+
+impl PreviousSession {
+    pub fn new(saved: Option<SavedSession>) -> Self {
+        Self(Mutex::new(saved))
+    }
+
+    /// A poisoned lock means some other thread panicked mid-restore; treat it
+    /// as "nothing on offer" rather than taking the whole app down with it.
+    fn get(&self) -> Option<SavedSession> {
+        self.0.lock().ok()?.clone()
+    }
+
+    fn consume(&self) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = None;
+        }
+    }
+}
+
+/// What the previous session held, for the restore card and the palette entry.
+/// `None` when there is nothing to restore.
+#[tauri::command]
+pub fn saved_session(previous: State<'_, PreviousSession>) -> Option<SessionSummary> {
+    previous.get().map(|s| s.summary())
+}
+
+/// Rebuild the previous session's workspaces, tabs and splits in one go. The
+/// panes are new shells opened in the directories the old ones were in; no
+/// process or scrollback comes back. Returns how many workspaces were restored.
+#[tauri::command]
+pub fn restore_session(
+    engine: Eng<'_>,
+    previous: State<'_, PreviousSession>,
+    cols: u16,
+    rows: u16,
+    prefs: Option<ResumePrefs>,
+) -> Result<usize, String> {
+    let Some(saved) = previous.get() else { return Ok(0) };
+    // Absent prefs means the caller wants what amux always did: no `--effort`
+    // flag, and the resume menu left for the person to answer.
+    let prefs = prefs.unwrap_or_default();
+    let restored = engine.restore_session(&saved, cols, rows, &prefs).map_err(err)?;
+    previous.consume();
+    Ok(restored)
 }
 
 // -- workspaces --------------------------------------------------------------

@@ -12,13 +12,7 @@
   import "@xterm/xterm/css/xterm.css";
   import { writePane, resizePane, subscribePane, type PaneId } from "./ipc";
   import { handleKey } from "./keymap";
-  import {
-    adjustFontSize,
-    settings,
-    setLastInputPos,
-    saveSettings,
-    setShowComposer,
-  } from "./settings.svelte";
+  import { adjustFontSize, settings, setShowComposer } from "./settings.svelte";
   import { themeById } from "./themes";
   import {
     paneInfo,
@@ -44,10 +38,12 @@
   let term = $state<Terminal>()!;
   let refit: (() => void) | undefined;
 
-  // ── Last-command chip ─────────────────────────────────────────────────
-  // Pin the user's most recently *submitted command* (up to 4 lines) inside
-  // the pane, in a draggable chip. We reconstruct the line from the keystrokes
-  // the user types (term.onData); it's accurate for typed/pasted prompts. We
+  // ── Last-command bar ──────────────────────────────────────────────────
+  // Pin the user's most recently *submitted command* as a full-width strip
+  // across the top of the pane, keeping the user's own line breaks (up to 4
+  // lines) and never soft-wrapping. We reconstruct the line from the
+  // keystrokes the user types (term.onData); it's accurate for typed/pasted
+  // prompts. We
   // mirror Claude's submit rule: Enter submits UNLESS the line ends with "\"
   // or is a modified Enter (Shift/Alt) — those insert a newline — so multi-line
   // prompts land as one command. Trivial confirmations (y/n, menu numbers,
@@ -59,10 +55,6 @@
   let lastInput = $state("");
   let inputBuf = ""; // in-progress line; committed to lastInput on plain Enter
   let inPaste = false; // inside a bracketed-paste block (\x1b[200~ … \x1b[201~)
-  // Drag state for repositioning the chip (position persists in settings).
-  let bannerEl = $state<HTMLDivElement>();
-  let dragging = $state(false);
-  let dragOrigin = { px: 0, py: 0, x: 0, y: 0 };
 
   function commitLine() {
     const t = inputBuf.trim();
@@ -70,35 +62,6 @@
     // Ignore trivial confirmations so the chip keeps the last *real* command.
     if (!t || t.length <= 1 || /^(y|n|yes|no|\d{1,3})$/i.test(t)) return;
     lastInput = t;
-  }
-
-  function bannerPointerDown(e: PointerEvent) {
-    dragging = true;
-    dragOrigin = {
-      px: e.clientX,
-      py: e.clientY,
-      x: settings.lastInputPos?.x ?? 8,
-      y: settings.lastInputPos?.y ?? 6,
-    };
-    bannerEl?.setPointerCapture(e.pointerId);
-    e.preventDefault();
-    e.stopPropagation();
-  }
-  function bannerPointerMove(e: PointerEvent) {
-    if (!dragging) return;
-    const bw = bannerEl?.offsetWidth ?? 0;
-    const bh = bannerEl?.offsetHeight ?? 0;
-    const maxX = Math.max(0, host.clientWidth - bw);
-    const maxY = Math.max(0, host.clientHeight - bh);
-    const x = Math.max(0, Math.min(maxX, dragOrigin.x + (e.clientX - dragOrigin.px)));
-    const y = Math.max(0, Math.min(maxY, dragOrigin.y + (e.clientY - dragOrigin.py)));
-    setLastInputPos(x, y);
-  }
-  function bannerPointerUp(e: PointerEvent) {
-    if (!dragging) return;
-    dragging = false;
-    bannerEl?.releasePointerCapture(e.pointerId);
-    saveSettings(); // persist the resting position once, on drop
   }
 
   function trackInput(data: string) {
@@ -515,7 +478,13 @@
         // (핸들러가 false를 반환해도 xterm은 preventDefault를 대신 해주지 않음)
         // keypress 자체를 막아야 한다.
         e.preventDefault();
-        void writePane(pane, kitty ? "\x1b[13;2u" : "\x1b\r");
+        const newline = kitty ? "\x1b[13;2u" : "\x1b\r";
+        // writePane은 PTY로 **직접** 쓴다 — term.onData를 거치지 않는다. 직전
+        // 명령 추적기(trackInput)는 onData에만 붙어 있으므로, 여기서 같은
+        // 바이트를 손으로 먹여 주지 않으면 사용자가 친 줄바꿈이 통째로 유실되고
+        // 여러 줄 프롬프트가 맨 위 띠에 한 줄로 눌려 보인다.
+        trackInput(newline);
+        void writePane(pane, newline);
         return false;
       }
       // kitty 모드에서 plain Esc는 CSI 27u로 보고해야 함 (프로토콜 규약).
@@ -970,6 +939,12 @@
 <!-- 터미널 + 하단 입력창을 세로로 쌓는 스택. 입력창을 켜면 터미널이 그만큼
      짧아지므로(PTY도 함께 리사이즈) 가려지는 내용이 없다. -->
 <div class="term-stack" style="--cfs: {settings.fontSize}px; --clh: {Math.round(settings.fontSize * 1.45)}px">
+  {#if settings.showLastInput && lastInput}
+    <div class="last-input" aria-hidden="true" title={lastInput}>
+      <span class="li-label">직전 명령</span>
+      <span class="li-text" style="font-size: {settings.fontSize}px">{lastInput}</span>
+    </div>
+  {/if}
 <div
   class="terminal-host"
   role="application"
@@ -1032,25 +1007,6 @@
     </div>
   {/if}
 </div>
-
-{#if settings.showLastInput && lastInput}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    class="last-input"
-    class:dragging
-    bind:this={bannerEl}
-    aria-hidden="true"
-    title="드래그해서 위치 이동"
-    style="left: {settings.lastInputPos?.x ?? 8}px; top: {settings.lastInputPos?.y ?? 6}px"
-    onpointerdown={bannerPointerDown}
-    onpointermove={bannerPointerMove}
-    onpointerup={bannerPointerUp}
-    onpointercancel={bannerPointerUp}
-  >
-    <span class="li-label"><span class="li-grip">⠿</span> 직전 명령</span>
-    <span class="li-text" style="font-size: {settings.fontSize}px">{lastInput}</span>
-  </div>
-{/if}
 
 <div class="wave-lab" aria-hidden="true">
   <canvas class="wl wave" bind:this={waveCanvas}></canvas>
@@ -1185,52 +1141,50 @@
     opacity: 0.35;
     cursor: default;
   }
-  /* Last-command chip — the user's most recent submitted command, floating
-     inside the pane as a draggable chip. Overlay only (never resizes the PTY).
-     Position comes from settings (inline left/top); clamped to 4 lines. */
+  /* Last-command bar — the user's most recent submitted command, pinned as a
+     full-width strip across the top of the pane. It is a ROW OF THE FLEX STACK
+     (not an overlay like it used to be), so it never covers terminal output:
+     the terminal shrinks by exactly this strip's height and the ResizeObserver
+     refits xterm and the PTY to match — same contract as .composer below it.
+     Hard newlines the user typed are kept (white-space: pre, capped at 4
+     lines); soft wrapping is off, so anything past the right edge is
+     ellipsized (hover for the full text). The wide right padding keeps the
+     text clear of .wave-lab, which floats over this strip's right end
+     (140px wave + 8px gap + 48px arc + 8px inset ≈ 204px). */
   .last-input {
-    position: absolute;
-    z-index: 3;
-    width: fit-content;
-    max-width: min(520px, calc(100% - 16px));
-    pointer-events: auto;
-    cursor: grab;
-    touch-action: none;
-    user-select: none;
-    padding: 3px 10px 5px;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    /* 쉴 때 항상 1줄 — 첫 명령이 들어와도 아래 터미널 높이가 튀지 않는다. */
+    min-height: calc(var(--clh) + 8px);
+    padding: 3px 210px 4px 8px;
     background: color-mix(in srgb, var(--surface-2) 96%, transparent);
-    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-    border-radius: 7px;
-    box-shadow: 0 3px 12px -3px rgba(0, 0, 0, 0.5);
-  }
-  .last-input.dragging {
-    cursor: grabbing;
-    box-shadow: 0 6px 20px -4px rgba(0, 0, 0, 0.6);
+    border-bottom: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    user-select: none;
   }
   .li-label {
-    display: block;
+    flex: 0 0 auto;
     font-size: 0.6rem;
     font-weight: 700;
     letter-spacing: 0.03em;
     color: var(--accent);
     opacity: 0.85;
-    margin-bottom: 1px;
-  }
-  .li-grip {
-    color: var(--muted);
-    opacity: 0.8;
   }
   .li-text {
-    display: -webkit-box;
-    -webkit-line-clamp: 4;
-    line-clamp: 4;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
+    flex: 1 1 auto;
+    min-width: 0;
     /* font-size is set inline to track the terminal (prompt) font size. */
     line-height: 1.35;
     color: var(--text-2);
-    white-space: pre-wrap;
-    word-break: break-word;
+    /* 내가 친 개행(Shift+Enter)은 그대로 살리고, 폭이 좁아서 생기는 자동
+       줄바꿈만 막는다. 한 줄이 폭을 넘치면 끝을 … 로 자른다. */
+    white-space: pre;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    /* 아주 긴 여러 줄 프롬프트가 터미널 높이를 다 먹지 않도록 4줄에서 멈춘다.
+       (1.35 는 바로 위 line-height) */
+    max-height: calc(4 * 1.35em);
   }
   /* Activity widgets — the oscilloscope waveform (left) paired with the Arc
      Reactor core (right), in the pane's top-right corner. Above the terminal,

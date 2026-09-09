@@ -333,6 +333,19 @@ fn main() -> anyhow::Result<()> {
                 let mut input = String::new();
                 std::io::stdin().read_to_string(&mut input).ok();
                 let payload: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
+                // Every hook payload names the conversation it came from.
+                // Reporting it is what lets a later restore hand this pane back
+                // the same Claude session instead of a bare shell — so it is
+                // worth doing on any hook that carries the flag, not just the
+                // one whose message we are here for.
+                if let (Some(pane), Some(session)) =
+                    (pane.as_deref(), payload["session_id"].as_str())
+                {
+                    let _ = client.call(
+                        "pane.set_claude_session",
+                        json!({ "pane": pane, "session": session }),
+                    );
+                }
                 let message = payload["message"].as_str().map(String::from);
                 let event = payload["hook_event_name"].as_str().map(String::from);
                 (title.or(event).or(Some("Claude Code".into())), body.or(message))

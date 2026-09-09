@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use std::collections::VecDeque;
@@ -22,6 +22,8 @@ use tokio::sync::broadcast;
 use crate::layout;
 use crate::osc::OscEvent;
 use crate::pane::{OutputSink, Pane};
+use crate::session::{self, ResumeKey, ResumeMode, ResumePrefs, SavedLayout, SavedSession, SavedTab,
+    SavedWorkspace};
 
 /// Events fanned out to the Tauri layer (→ webview) and other listeners.
 #[derive(Debug, Clone)]
@@ -123,12 +125,35 @@ impl Workspaces {
 
 const HISTORY_CAP: usize = 200;
 
+/// How long a restore waits for a shell to print its prompt before typing the
+/// `claude --resume` line at it anyway. Generous: the shells of a big restore
+/// all start at once and compete for the machine.
+const RESUME_READY_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long to keep watching a restored pane for Claude Code's summary-or-full
+/// menu. Generous because a large conversation takes a while to draw, and cheap
+/// because the panes are polled together: a pane whose menu never appears (a
+/// short conversation, or a machine where "Don't ask me again" was chosen)
+/// costs the others nothing.
+const RESUME_DIALOG_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Scratch state threaded through a restore's walk of one tab's saved tree.
+#[derive(Default)]
+struct Respawn {
+    /// New panes, in `layout::panes()` order.
+    panes: Vec<PaneId>,
+    /// Panes to hand a Claude conversation back to, once their shells are up.
+    resumes: Vec<(PaneId, String)>,
+}
+
 pub struct Engine {
     panes: RwLock<HashMap<PaneId, Arc<Pane>>>,
     workspaces: RwLock<Workspaces>,
     events: broadcast::Sender<EngineEvent>,
     window_focused: AtomicBool,
     history: Mutex<VecDeque<NotificationEntry>>,
+    /// Set by `shutdown`. Stops the session autosave from writing the
+    /// half-torn-down state it would otherwise see on the way out.
+    shutting_down: AtomicBool,
 }
 
 impl Engine {
@@ -140,6 +165,7 @@ impl Engine {
             events,
             window_focused: AtomicBool::new(true),
             history: Mutex::new(VecDeque::new()),
+            shutting_down: AtomicBool::new(false),
         })
     }
 
@@ -819,6 +845,30 @@ impl Engine {
             .ok_or(EngineError::PaneNotFound(id))
     }
 
+    /// Record which Claude Code conversation is running in a pane. Reported by
+    /// the hooks (`amux notify --from-claude-hook` reads `session_id` off the
+    /// hook payload), and saved with the layout so a restore can hand the pane
+    /// back that conversation.
+    ///
+    /// Deduplicated on purpose: the `UserPromptSubmit` hook fires on every
+    /// prompt and would otherwise broadcast a state change per keystroke-turn
+    /// for a value that almost never changes.
+    pub fn set_claude_session(
+        &self,
+        id: PaneId,
+        session: Option<String>,
+    ) -> Result<(), EngineError> {
+        let pane = self.pane(id)?;
+        let mut slot = pane.claude_session.lock();
+        if *slot == session {
+            return Ok(());
+        }
+        *slot = session;
+        drop(slot);
+        self.notify_state_changed();
+        Ok(())
+    }
+
     pub fn write_pane(&self, id: PaneId, data: &[u8]) -> Result<(), EngineError> {
         self.pane(id)?.write_input(data).map_err(EngineError::Other)
     }
@@ -871,11 +921,308 @@ impl Engine {
                     notification: p.notification.lock().clone(),
                     status: *p.status.lock(),
                     exited: p.has_exited(),
+                    claude_session: p.claude_session.lock().clone(),
                 })
                 .collect(),
             active_workspace: ws.active,
             notifications: self.history.lock().iter().cloned().collect(),
         }
+    }
+
+    // -- session persistence ---------------------------------------------------
+
+    /// The saveable shape of the current state: workspace and tab names, their
+    /// order, every split tree with its ratios, and the directory each pane's
+    /// shell is sitting in. Written to disk continuously by
+    /// `start_session_autosave` so an unexpected exit costs at most a second of
+    /// arrangement.
+    ///
+    /// Carries no ids on purpose (see `crate::session`): they are re-minted on
+    /// restore, so keeping them would rewrite the file on every single save.
+    pub fn session_snapshot(&self) -> SavedSession {
+        let ws = self.workspaces.read();
+        let panes = self.panes.read();
+        // What a leaf of the saved tree holds: where the shell was, and which
+        // Claude conversation was running there.
+        let leaf = |id: PaneId| match panes.get(&id) {
+            Some(pane) => SavedLayout::Leaf {
+                cwd: pane.meta.lock().cwd.clone(),
+                claude_session: pane.claude_session.lock().clone(),
+            },
+            None => SavedLayout::Leaf { cwd: None, claude_session: None },
+        };
+        SavedSession {
+            version: session::FORMAT_VERSION,
+            // Stamped by `session::save`; left at 0 here so two snapshots of an
+            // unchanged layout compare equal and the autosave can skip the write.
+            saved_at_ms: 0,
+            workspaces: ws
+                .map
+                .values()
+                .map(|w| SavedWorkspace {
+                    name: w.name.clone(),
+                    tabs: w
+                        .tabs
+                        .values()
+                        .map(|t| SavedTab {
+                            name: t.name.clone(),
+                            layout: session::to_saved(&t.layout, &leaf),
+                            active_pane: layout::panes(&t.layout)
+                                .iter()
+                                .position(|p| *p == t.active_pane)
+                                .unwrap_or(0),
+                        })
+                        .collect(),
+                    active_tab: w.tabs.get_index_of(&w.active_tab).unwrap_or(0),
+                    tab_created_count: w.tab_created_count,
+                })
+                .collect(),
+            active_workspace: ws.active.and_then(|id| ws.map.get_index_of(&id)),
+            workspace_created_count: ws.created_count,
+        }
+    }
+
+    /// Rebuild `saved` as live workspaces, *appending* to whatever is already
+    /// open — a restore never disturbs a pane that is already running.
+    ///
+    /// The panes come back as fresh shells started in the recorded directories;
+    /// no process, scrollback or shell history survives a restart, and nothing
+    /// pretends otherwise. Returns how many workspaces came back.
+    pub fn restore_session(
+        self: &Arc<Self>,
+        saved: &SavedSession,
+        cols: u16,
+        rows: u16,
+        prefs: &ResumePrefs,
+    ) -> Result<usize, EngineError> {
+        let mut built: Vec<(WorkspaceId, WorkspaceState)> = Vec::new();
+        // Everything spawned so far, so a failure part-way through can undo
+        // itself instead of leaking shells nobody can see or close.
+        let mut spawned: Vec<PaneId> = Vec::new();
+        // Panes whose Claude conversation is to be handed back once their
+        // shells are up (see `resume_claude_sessions`).
+        let mut resumes: Vec<(PaneId, String)> = Vec::new();
+
+        for sw in &saved.workspaces {
+            let ws_id = WorkspaceId::new();
+            let mut tabs = IndexMap::new();
+            for st in &sw.tabs {
+                let tab_id = TabId::new();
+                let mut walk = Respawn::default();
+                let layout =
+                    match self.respawn_layout(&st.layout, ws_id, tab_id, cols, rows, &mut walk) {
+                        Ok(node) => node,
+                        Err(e) => {
+                            spawned.extend(&walk.panes);
+                            self.kill_panes(&spawned);
+                            return Err(e);
+                        }
+                    };
+                let tab_panes = walk.panes;
+                resumes.extend(walk.resumes);
+                let Some(&first) = tab_panes.first() else { continue };
+                // The saved position addresses the tab's in-order pane list; a
+                // file listing a position that no longer exists falls back to
+                // the first pane rather than failing the whole restore.
+                let active_pane = tab_panes.get(st.active_pane).copied().unwrap_or(first);
+                spawned.extend(&tab_panes);
+                tabs.insert(tab_id, TabState { name: st.name.clone(), layout, active_pane });
+            }
+            // A workspace is never empty; one that somehow saved with no tabs
+            // is skipped rather than restored into an unusable state.
+            if tabs.is_empty() {
+                continue;
+            }
+            let active_index = sw.active_tab.min(tabs.len() - 1);
+            let active_tab = *tabs.get_index(active_index).expect("index clamped above").0;
+            built.push((
+                ws_id,
+                WorkspaceState {
+                    name: sw.name.clone(),
+                    tabs,
+                    active_tab,
+                    // Verbatim, not `max(tabs.len())`: the counter tracks how
+                    // many `탭 N` auto-names were handed out, not how many tabs
+                    // exist — hand-named tabs never advance it. Restoring it as
+                    // saved makes the next Ctrl+T produce exactly the name it
+                    // would have produced had the app never died.
+                    tab_created_count: sw.tab_created_count,
+                },
+            ));
+        }
+
+        if built.is_empty() {
+            return Ok(0);
+        }
+        let restored = built.len();
+        let ids: Vec<WorkspaceId> = built.iter().map(|(id, _)| *id).collect();
+        {
+            let mut ws = self.workspaces.write();
+            for (id, state) in built {
+                ws.map.insert(id, state);
+            }
+            // Never lower than the saved count, or the next auto-named
+            // workspace would collide with a `워크스페이스 N` that just came back.
+            ws.created_count = ws.created_count.max(saved.workspace_created_count);
+            // Land the user back on the workspace they were last looking at.
+            ws.active = saved
+                .active_workspace
+                .and_then(|i| ids.get(i).copied())
+                .or_else(|| ids.last().copied());
+        }
+        self.notify_state_changed();
+        self.resume_claude_sessions(resumes, prefs.clone());
+        Ok(restored)
+    }
+
+    /// Type `claude --resume <id>` into every restored pane that was running a
+    /// Claude conversation, so the agents come back with the layout instead of
+    /// leaving the user 17 bare shells to restart by hand.
+    ///
+    /// Typed into the pane rather than made the pane's own command: a normal
+    /// shell stays underneath, so quitting Claude leaves a usable terminal
+    /// instead of closing the pane.
+    ///
+    /// Runs on its own thread because it has to *wait*. A shell that is still
+    /// sourcing its rc files will swallow a line typed at it, and there is no
+    /// signal for "ready" — the closest honest one is "it has printed
+    /// something", which is what `Pane::has_output` reports. Restoring must not
+    /// block on that, hence the thread.
+    fn resume_claude_sessions(self: &Arc<Self>, resumes: Vec<(PaneId, String)>, prefs: ResumePrefs) {
+        if resumes.is_empty() {
+            return;
+        }
+        let engine = Arc::downgrade(self);
+        std::thread::Builder::new()
+            .name("claude-resume".into())
+            .spawn(move || {
+                let mut typed: Vec<PaneId> = Vec::new();
+                for (id, session) in resumes {
+                    let Some(engine) = engine.upgrade() else { return };
+                    let Ok(pane) = engine.pane(id) else { continue };
+                    // One budget per pane. A single deadline shared by the whole
+                    // batch let a slow first shell spend all of it, after which
+                    // every remaining pane was typed at before its shell was
+                    // listening and swallowed the line.
+                    let deadline = std::time::Instant::now() + RESUME_READY_TIMEOUT;
+                    while !pane.has_output() && std::time::Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    // `session` was validated by `claude_transcript_exists`
+                    // before it got here, so it cannot carry shell syntax, and
+                    // `resume_command` vets the effort level for the same reason.
+                    let line = format!("{}\r", prefs.resume_command(&session));
+                    let _ = engine.write_pane(id, line.as_bytes());
+                    typed.push(id);
+                }
+                answer_resume_dialogs(&engine, typed, prefs.mode);
+            })
+            .expect("spawn claude resume");
+    }
+
+    /// Walk a saved tree, spawning one shell per leaf, and hand back the live
+    /// `LayoutNode` with its ratios intact. `out.panes` collects the new panes
+    /// in the same in-order sequence `layout::panes()` produces, which is what
+    /// the saved `active_pane` position is an index into.
+    fn respawn_layout(
+        self: &Arc<Self>,
+        node: &SavedLayout,
+        workspace: WorkspaceId,
+        tab: TabId,
+        cols: u16,
+        rows: u16,
+        out: &mut Respawn,
+    ) -> Result<LayoutNode, EngineError> {
+        match node {
+            SavedLayout::Leaf { cwd, claude_session } => {
+                // A directory that has since been deleted or renamed must not
+                // sink the restore: drop it and let the shell start at $HOME.
+                let cwd = cwd
+                    .as_ref()
+                    .map(std::path::PathBuf::from)
+                    .filter(|path| path.is_dir());
+                let pane = self.spawn_pane(workspace, tab, cols, rows, cwd)?;
+                out.panes.push(pane.id);
+                // Only offer to resume a conversation Claude can still find.
+                // A deleted transcript would leave the pane showing an error
+                // where the user expected their agent.
+                if let Some(session) = claude_session
+                    .as_ref()
+                    .filter(|id| session::claude_transcript_exists(id))
+                {
+                    // Carry the id forward immediately rather than waiting for
+                    // the resumed session's `SessionStart` hook to report it
+                    // back. Without this the pane's conversation is forgotten
+                    // the moment it is restored, so a second crash would drop
+                    // back to a bare shell — and on a machine whose hooks are
+                    // not up to date yet, it would never be remembered at all.
+                    *pane.claude_session.lock() = Some(session.clone());
+                    out.resumes.push((pane.id, session.clone()));
+                }
+                Ok(LayoutNode::Leaf { pane: pane.id })
+            }
+            SavedLayout::Split { axis, ratio, first, second } => Ok(LayoutNode::Split {
+                axis: *axis,
+                ratio: *ratio,
+                first: Box::new(self.respawn_layout(first, workspace, tab, cols, rows, out)?),
+                second: Box::new(self.respawn_layout(second, workspace, tab, cols, rows, out)?),
+            }),
+        }
+    }
+
+    /// Kill panes that never made it into a workspace (restore rollback).
+    fn kill_panes(&self, ids: &[PaneId]) {
+        let mut panes = self.panes.write();
+        for id in ids {
+            if let Some(pane) = panes.remove(id) {
+                pane.kill();
+            }
+        }
+    }
+
+    /// Mirror the session shape to disk once a second, for as long as the app
+    /// runs. amux usually dies without getting to say goodbye, so there is no
+    /// save-on-exit hook to rely on — the file has to be current at all times.
+    ///
+    /// A plain polling thread rather than a subscription to `StateChanged`, for
+    /// the same reason `start_meta_sweeper` is one: the work is synchronous,
+    /// and a poll cannot be starved by a pane that flips status every tick.
+    /// Almost every tick costs nothing, because the *shape* only changes when a
+    /// workspace, tab, split, name or directory does — typing into a terminal
+    /// leaves it identical and the disk stays untouched.
+    pub fn start_session_autosave(self: &Arc<Self>) {
+        let engine = Arc::downgrade(self);
+        std::thread::Builder::new()
+            .name("session-autosave".into())
+            .spawn(move || {
+                let mut armed = false;
+                let mut last: Option<SavedSession> = None;
+                loop {
+                    std::thread::sleep(Duration::from_secs(1));
+                    let Some(engine) = engine.upgrade() else { break };
+                    if engine.shutting_down.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let snapshot = engine.session_snapshot();
+                    let was_armed = armed;
+                    if !session::arm_and_check(&mut armed, &snapshot) {
+                        continue;
+                    }
+                    if !was_armed {
+                        // First write of this run: keep one generation of the
+                        // file we are about to start replacing.
+                        session::keep_previous_generation();
+                    }
+                    if last.as_ref() == Some(&snapshot) {
+                        continue;
+                    }
+                    match session::save(&snapshot) {
+                        Ok(()) => last = Some(snapshot),
+                        Err(e) => tracing::warn!("session autosave failed: {e}"),
+                    }
+                }
+            })
+            .expect("spawn session autosave");
     }
 
     /// Background thread polling pane metadata (cwd / git branch / ports).
@@ -1027,11 +1374,53 @@ impl Engine {
 
     /// Kill every pane (app shutdown).
     pub fn shutdown(&self) {
+        // Flag first: draining the pane map leaves the workspaces holding
+        // layouts full of dangling pane ids, and a session autosave that ran
+        // in that gap would save every pane with no directory — overwriting a
+        // perfectly good file with a degraded one on the way out the door.
+        self.shutting_down.store(true, Ordering::SeqCst);
         for pane in self.panes.write().drain().map(|(_, p)| p) {
             pane.kill();
         }
     }
 }
+
+/// Answer Claude Code's summary-or-full menu on the panes a restore just typed
+/// `claude --resume` into.
+///
+/// Runs after every line is typed, not between them, and polls the panes as one
+/// group. Waiting on each pane in turn would multiply the timeout by the number
+/// of panes, and most restores have panes that never show the menu at all.
+///
+/// Deliberately timid. It types only when `resume_dialog_step` recognises the
+/// cursor on a menu row, it re-reads the screen between moving the cursor and
+/// confirming, and when the menu never appears it gives up without touching the
+/// pane — which leaves the person exactly the prompt they would have had.
+fn answer_resume_dialogs(engine: &Weak<Engine>, panes: Vec<PaneId>, mode: ResumeMode) {
+    if mode == ResumeMode::Ask || panes.is_empty() {
+        return;
+    }
+    let mut pending = panes;
+    let deadline = std::time::Instant::now() + RESUME_DIALOG_TIMEOUT;
+    while !pending.is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(300));
+        let Some(engine) = engine.upgrade() else { return };
+        pending.retain(|&id| {
+            // A pane that has gone away is simply dropped from the watch list.
+            let Ok(screen) = engine.read_screen(id) else { return false };
+            match session::resume_dialog_step(&screen, mode) {
+                // Enter settles the choice; a cursor move does not, so that pane
+                // stays on the list for the next round.
+                Some(key) => {
+                    let _ = engine.write_pane(id, key.bytes());
+                    key != ResumeKey::Enter
+                }
+                None => true,
+            }
+        });
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -1227,6 +1616,187 @@ mod tests {
         engine.set_pane_done(id, true).unwrap();
         assert_eq!(*pane.status.lock(), PaneStatus::Done);
 
+        engine.shutdown();
+    }
+
+    /// A crash costs the shells; it must not cost the arrangement. Build two
+    /// workspaces — the first holding a tab split twice with a hand-dragged
+    /// divider — write the shape out as JSON, then restore it into a *fresh*
+    /// engine: names, tab order, split geometry, ratios, the active tab and the
+    /// focused pane's position all have to come back.
+    #[test]
+    fn session_round_trip_rebuilds_the_arrangement() {
+        let engine = Engine::new();
+        let (ws1, tab1, pane1) = engine
+            .create_workspace(Some("첫 워크스페이스".into()), Some("작업".into()), None, 80, 24)
+            .unwrap();
+        // 작업 tab: three panes, in-order [pane1, pane2, pane3].
+        let pane2 = engine.split_pane(pane1, SplitAxis::Horizontal, 80, 24).unwrap();
+        let _pane3 = engine.split_pane(pane2, SplitAxis::Vertical, 80, 24).unwrap();
+        engine.set_ratio(ws1, tab1, &[], 0.7).unwrap();
+        engine.new_tab(ws1, Some("로그".into()), 80, 24).unwrap();
+        engine
+            .create_workspace(Some("두 번째 워크스페이스".into()), Some("빌드".into()), None, 80, 24)
+            .unwrap();
+        // Leave the user looking at the first workspace, 작업 tab, middle pane.
+        engine.focus_tab(tab1).unwrap();
+        engine.focus_pane(pane2).unwrap();
+
+        // Through JSON, exactly as the autosave writes it and a restore reads it.
+        let json = serde_json::to_string(&engine.session_snapshot()).unwrap();
+        let saved: SavedSession = serde_json::from_str(&json).unwrap();
+        engine.shutdown();
+
+        let restored_engine = Engine::new();
+        assert_eq!(restored_engine.restore_session(&saved, 80, 24, &ResumePrefs::default()).unwrap(), 2);
+        let snap = restored_engine.snapshot();
+
+        assert_eq!(
+            snap.workspaces.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(),
+            ["첫 워크스페이스", "두 번째 워크스페이스"],
+        );
+        assert_eq!(snap.active_workspace, Some(snap.workspaces[0].id), "landed on the wrong workspace");
+
+        let first = &snap.workspaces[0];
+        assert_eq!(
+            first.tabs.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            ["작업", "로그"],
+            "tab order or names drifted",
+        );
+        assert_eq!(first.active_tab, Some(first.tabs[0].id));
+
+        // The split tree: a 0.7 divider with a nested split on its second side.
+        let work = &first.tabs[0];
+        let panes = layout::panes(&work.layout);
+        assert_eq!(panes.len(), 3);
+        match &work.layout {
+            LayoutNode::Split { ratio, second, .. } => {
+                assert!((ratio - 0.7).abs() < 1e-6, "dragged ratio lost: {ratio}");
+                assert!(matches!(**second, LayoutNode::Split { .. }), "nested split lost");
+            }
+            _ => panic!("expected a split at the root of 작업"),
+        }
+        // Focus follows the *position* the pane held, since its id is long dead.
+        assert_eq!(work.active_pane, Some(panes[1]), "focus landed on the wrong pane");
+
+        restored_engine.shutdown();
+    }
+
+    /// Restoring appends: whatever is already open keeps running untouched.
+    #[test]
+    fn restore_appends_and_never_replaces() {
+        let engine = Engine::new();
+        let (_ws, _tab, live) = engine
+            .create_workspace(Some("이미 열려 있던 것".into()), None, None, 80, 24)
+            .unwrap();
+
+        let saved = SavedSession {
+            version: session::FORMAT_VERSION,
+            saved_at_ms: 0,
+            workspaces: vec![SavedWorkspace {
+                name: "복구된 것".into(),
+                tabs: vec![SavedTab {
+                    name: "탭 1".into(),
+                    layout: SavedLayout::Leaf { cwd: None, claude_session: None },
+                    active_pane: 0,
+                }],
+                active_tab: 0,
+                tab_created_count: 1,
+            }],
+            active_workspace: Some(0),
+            workspace_created_count: 1,
+        };
+        assert_eq!(engine.restore_session(&saved, 80, 24, &ResumePrefs::default()).unwrap(), 1);
+
+        let snap = engine.snapshot();
+        assert_eq!(
+            snap.workspaces.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(),
+            ["이미 열려 있던 것", "복구된 것"],
+        );
+        assert!(engine.pane(live).is_ok(), "restore killed a pane that was already running");
+        engine.shutdown();
+    }
+
+    /// The record → save half of "the Claude conversation comes back too": what
+    /// the hooks report has to survive into the file, at the right leaf.
+    ///
+    /// The restore half is deliberately split: a transcript that exists would
+    /// make the engine type `claude --resume` into a real shell, launching a
+    /// real agent inside `cargo test`. So the guard is tested here from the
+    /// other side (an unknown conversation must be dropped, quietly), the
+    /// guard itself in `tests/claude_resume.rs`, and the actual resume by
+    /// running it in the app.
+    #[test]
+    fn a_reported_claude_session_reaches_the_saved_leaf() {
+        let engine = Engine::new();
+        let (_ws, _tab, left) = engine
+            .create_workspace(Some("연구".into()), Some("에이전트".into()), None, 80, 24)
+            .unwrap();
+        let right = engine.split_pane(left, SplitAxis::Horizontal, 80, 24).unwrap();
+
+        let session = "aaa130ca-cf95-441c-9812-a6587b6dfced";
+        engine.set_claude_session(left, Some(session.into())).unwrap();
+
+        // Only the pane that reported one carries it; its neighbour stays bare.
+        let saved = engine.session_snapshot();
+        match &saved.workspaces[0].tabs[0].layout {
+            SavedLayout::Split { first, second, .. } => {
+                assert!(
+                    matches!(&**first, SavedLayout::Leaf { claude_session: Some(s), .. } if s == session),
+                    "the reported conversation did not reach the leaf: {first:?}",
+                );
+                assert!(matches!(&**second, SavedLayout::Leaf { claude_session: None, .. }));
+            }
+            other => panic!("expected a split, got {other:?}"),
+        }
+
+        // The engine also exposes it live, which is how the sidebar and the
+        // capture script see it.
+        let snapshot = engine.snapshot();
+        let pane = snapshot.panes.iter().find(|p| p.id == left).unwrap();
+        assert_eq!(pane.claude_session.as_deref(), Some(session));
+        assert_eq!(
+            snapshot.panes.iter().find(|p| p.id == right).unwrap().claude_session,
+            None,
+        );
+        engine.shutdown();
+    }
+
+    /// A conversation Claude can no longer find must be dropped silently. If it
+    /// were not, the restored pane would greet the user with a resume error
+    /// where they expected their agent — and, worse, the same rejection is what
+    /// keeps anything that is not a plain id off a shell command line.
+    #[test]
+    fn a_vanished_claude_session_is_not_carried_into_a_restore() {
+        let engine = Engine::new();
+        let saved = SavedSession {
+            version: session::FORMAT_VERSION,
+            saved_at_ms: 0,
+            workspaces: vec![SavedWorkspace {
+                name: "복구".into(),
+                tabs: vec![SavedTab {
+                    name: "탭 1".into(),
+                    layout: SavedLayout::Leaf {
+                        cwd: None,
+                        // No such transcript, so nothing may be typed.
+                        claude_session: Some("00000000-0000-4000-8000-000000000000".into()),
+                    },
+                    active_pane: 0,
+                }],
+                active_tab: 0,
+                tab_created_count: 0,
+            }],
+            active_workspace: Some(0),
+            workspace_created_count: 0,
+        };
+        assert_eq!(engine.restore_session(&saved, 80, 24, &ResumePrefs::default()).unwrap(), 1);
+
+        let snapshot = engine.snapshot();
+        assert_eq!(snapshot.panes.len(), 1);
+        assert_eq!(
+            snapshot.panes[0].claude_session, None,
+            "a conversation that no longer exists was kept, and would be typed at a shell",
+        );
         engine.shutdown();
     }
 }

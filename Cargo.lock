@@ -78,11 +78,13 @@ dependencies = [
 name = "amux-cli"
 version = "0.5.0"
 dependencies = [
+ "amux-core",
  "amux-protocol",
  "anyhow",
  "clap",
  "interprocess",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

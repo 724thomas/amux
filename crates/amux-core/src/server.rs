@@ -282,6 +282,12 @@ fn dispatch(
             Ok(Value::Null)
         }
 
+        "pane.set_claude_session" => {
+            let p: PaneSetClaudeSessionParams = parse(params)?;
+            engine.set_claude_session(resolve_pane(engine, &p.pane)?, p.session)?;
+            Ok(Value::Null)
+        }
+
         "pane.send_text" => {
             let p: SendTextParams = parse(params)?;
             engine.write_pane(resolve_pane(engine, &p.pane)?, p.text.as_bytes())?;

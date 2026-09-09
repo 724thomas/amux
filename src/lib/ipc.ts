@@ -40,6 +40,9 @@ export interface PaneInfo {
   notification: PaneNotification | null;
   status: PaneStatus;
   exited: boolean;
+  /** Id of the Claude Code conversation running here, reported by the hooks.
+   *  Saved with the layout so a restore can bring the conversation back. */
+  claude_session: string | null;
 }
 
 export type LayoutNode =
@@ -85,6 +88,43 @@ export interface Snapshot {
 }
 
 export const getSnapshot = () => invoke<Snapshot>("get_snapshot");
+
+// -- previous session ----------------------------------------------------------
+
+/// What the last run left on disk. amux mirrors the *arrangement* (workspace
+/// names, tab names, split shape, each pane's directory) to
+/// `~/.config/amux/session.json` every second, so an unexpected exit costs the
+/// shells but not the layout.
+export interface SessionSummary {
+  workspaces: number;
+  tabs: number;
+  panes: number;
+  /** Unix epoch milliseconds of the last autosave. */
+  saved_at_ms: number;
+}
+
+/** The previous session's size, or null when there is nothing to restore. */
+export const savedSession = () => invoke<SessionSummary | null>("saved_session");
+
+/** How a restore should answer Claude Code's "resume from a summary, or the
+ *  full session?" menu on every pane it brings back. `ask` leaves the menu
+ *  alone for the person to answer, which is what amux did before this existed. */
+export type ResumeMode = "ask" | "full" | "summary";
+
+/** Choices made once on the restore card and applied to every Claude pane. */
+export interface ResumePrefs {
+  /** Level for `claude --effort`, or null to leave it to the user's
+   *  `~/.claude/settings.json`. */
+  effort: string | null;
+  mode: ResumeMode;
+}
+
+/// Rebuild the previous session's workspaces, tabs and splits in one call.
+/// The panes come back as fresh shells in the directories they were in —
+/// running processes and scrollback do not survive. Returns how many
+/// workspaces were restored.
+export const restoreSession = (prefs: ResumePrefs, cols = 80, rows = 24) =>
+  invoke<number>("restore_session", { cols, rows, prefs });
 
 // -- workspaces ---------------------------------------------------------------
 

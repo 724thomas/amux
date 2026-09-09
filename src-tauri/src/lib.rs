@@ -15,13 +15,20 @@ pub fn run() {
         .init();
 
     let engine: Arc<Engine> = Engine::new();
+    // Read the previous session BEFORE anything can touch the file, and hold it
+    // in memory: the autosave below starts writing as soon as the user opens a
+    // workspace, and the restore offer has to survive that.
+    let previous = commands::PreviousSession::new(amux_core::session::load());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(Arc::clone(&engine))
+        .manage(previous)
         .invoke_handler(tauri::generate_handler![
             commands::get_snapshot,
+            commands::saved_session,
+            commands::restore_session,
             commands::create_workspace,
             commands::close_workspace,
             commands::focus_workspace,
@@ -46,10 +53,17 @@ pub fn run() {
         ])
         .setup(move |app| {
             engine.start_meta_sweeper();
+            // Keep ~/.config/amux/session.json current so an unexpected exit
+            // (a crash, an OOM kill) costs at most a second of arrangement.
+            // The saver holds its fire until it has seen a non-empty state, so
+            // the empty launch below cannot erase what it is meant to protect.
+            engine.start_session_autosave();
             // Launch with zero workspaces — the user opens the first one via
-            // "+ 새 워크스페이스" (which prompts for a title). We intentionally
-            // do NOT auto-create a workspace here; the frontend renders an empty
-            // main area and the sidebar's add button is the entry point.
+            // "+ 새 워크스페이스" (which prompts for a title), or restores the
+            // previous session in one click from the card the frontend shows
+            // over the empty main area. We intentionally do NOT auto-create a
+            // workspace here, and do NOT auto-restore: bringing a dozen shells
+            // back to life is the user's call to make, not a launch side effect.
             // Automation socket: same engine the UI uses.
             tauri::async_runtime::spawn({
                 let engine = Arc::clone(&engine);
