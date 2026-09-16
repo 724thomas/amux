@@ -14,6 +14,8 @@
 //! - `notify`     — notification policy + desktop dispatch (M4)
 //! - `server`     — NDJSON JSON-RPC Unix-socket server (M3)
 //! - `session`    — save/restore of the workspace+tab+split shape (M5)
+//! - `win_proc`   — Windows-only: the pane's process tree, standing in for
+//!   the foreground process group Unix gets from the PTY
 
 pub mod engine;
 pub mod layout;
@@ -24,5 +26,7 @@ pub mod pane;
 pub mod server;
 pub mod session;
 pub mod term_state;
+#[cfg(windows)]
+pub mod win_proc;
 
 pub use engine::{Engine, EngineError, EngineEvent};

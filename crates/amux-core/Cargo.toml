@@ -26,10 +26,20 @@ interprocess = { version = "2", features = ["tokio"] }
 libc = "0.2"
 libproc = "0.14.11"
 
-# Windows: detect whether the pane's shell has a live child process (the
-# "a command is running" signal — no foreground process group under ConPTY).
+# Windows has no foreground process group and no procfs, so the pane
+# metadata the sidebar shows is assembled from Win32 directly:
+#   ToolHelp  — the pane shell's process tree (what is running in the pane)
+#   Threading — process creation times, to pick the newest child of the shell
+#   IpHelper  — the TCP table, for LISTEN ports owned by that tree
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
 ] }
+# A process's working directory lives in its PEB, at offsets Windows does not
+# document; sysinfo already reads it (and handles the 32/64-bit mismatch), so
+# we ask it rather than hard-coding those offsets here.
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }

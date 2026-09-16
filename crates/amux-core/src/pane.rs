@@ -293,12 +293,13 @@ impl Pane {
     ///
     /// Unix-only: `process_group_leader` (tcgetpgrp on the PTY master) has no
     /// Windows counterpart — ConPTY has no process groups — and portable-pty
-    /// only defines the method under `#[cfg(unix)]`. On Windows we return None,
-    /// which every caller already treats as "unknown": cwd/git meta fall back
-    /// to empty, and the silence heuristic to its shell-is-foreground path
-    /// (Windows status is driven by the Claude hooks instead — see
-    /// scripts/install-claude-hooks.py). Keeping the Unix arm byte-for-byte
-    /// identical means no behavior change on Linux/macOS.
+    /// only defines the method under `#[cfg(unix)]`, so we return None there.
+    ///
+    /// Windows callers do not use this. They ask the pane's process tree
+    /// instead (`win_proc`), which answers the same questions: `app_running`
+    /// below, and `meta::compute`'s choice of which process to read cwd from.
+    /// Keeping the Unix arm byte-for-byte identical means no behavior change
+    /// on Linux/macOS.
     pub fn shell_pid(&self) -> Option<u32> {
         #[cfg(unix)]
         {
@@ -340,47 +341,32 @@ impl Pane {
         }
         #[cfg(windows)]
         {
-            self.child_pid().is_some_and(has_live_child)
+            self.child_pid()
+                .is_some_and(|shell| !crate::win_proc::tree().children_of(shell).is_empty())
         }
     }
 
     pub fn kill(&self) {
         let _ = self.killer.lock().kill();
     }
-}
 
-/// Does any running process have `parent_pid` as its parent? Windows-only probe
-/// backing `Pane::app_running` (the "a command is running in the pane" signal,
-/// since ConPTY exposes no foreground process group).
-#[cfg(windows)]
-fn has_live_child(parent_pid: u32) -> bool {
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-        TH32CS_SNAPPROCESS,
-    };
-    unsafe {
-        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
-            return false;
-        };
-        let mut entry = PROCESSENTRY32W {
-            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
-            ..Default::default()
-        };
-        let mut found = false;
-        if Process32FirstW(snapshot, &mut entry).is_ok() {
-            loop {
-                if entry.th32ParentProcessID == parent_pid {
-                    found = true;
-                    break;
-                }
-                if Process32NextW(snapshot, &mut entry).is_err() {
-                    break;
+    /// Stand in for the frontend terminal, for tests that drive a real shell.
+    ///
+    /// ConPTY asks for the cursor position (`ESC[6n`) as the shell starts and
+    /// will not pump its output until something answers; PSReadLine re-asks on
+    /// every redraw. xterm.js does this in the real app, so headless tests
+    /// must. Inert on Unix, where nothing asks.
+    #[cfg(test)]
+    pub(crate) fn answer_cursor_queries(self: &Arc<Self>) {
+        let responder = Arc::clone(self);
+        self.set_sink(Box::new(move |chunk| {
+            const DSR: &[u8] = b"\x1b[6n";
+            for w in chunk.windows(DSR.len()) {
+                if w == DSR {
+                    let _ = responder.write(b"\x1b[1;1R");
                 }
             }
-        }
-        let _ = CloseHandle(snapshot);
-        found
+        }));
     }
 }
 
@@ -404,19 +390,7 @@ mod tests {
         )
         .expect("spawn pane");
 
-        // Stand in for the frontend terminal: ConPTY emits a cursor-position
-        // query (`ESC[6n`) at startup and won't pump the shell's output until
-        // it is answered. xterm.js does this in the real app; headless we must.
-        // Answer every occurrence — PSReadLine re-queries the position on redraw.
-        let responder = pane.clone();
-        pane.set_sink(Box::new(move |chunk| {
-            const DSR: &[u8] = b"\x1b[6n";
-            for w in chunk.windows(DSR.len()) {
-                if w == DSR {
-                    let _ = responder.write(b"\x1b[1;1R");
-                }
-            }
-        }));
+        pane.answer_cursor_queries();
 
         pane.write(b"echo amux-$((40+2))\r").expect("write");
 
@@ -455,17 +429,7 @@ mod tests {
             |_| {},
         )
         .expect("spawn pane");
-        // Answer ConPTY's startup cursor-position query (`ESC[6n`) so the shell
-        // runs and produces output; no-op on Unix. See echo_round_trip.
-        let responder = pane.clone();
-        pane.set_sink(Box::new(move |chunk| {
-            const DSR: &[u8] = b"\x1b[6n";
-            for w in chunk.windows(DSR.len()) {
-                if w == DSR {
-                    let _ = responder.write(b"\x1b[1;1R");
-                }
-            }
-        }));
+        pane.answer_cursor_queries();
         pane.write(b"echo replay-me\r").expect("write");
 
         // Wait until the shell has actually produced the output into the tail,

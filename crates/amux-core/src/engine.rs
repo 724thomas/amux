@@ -1423,6 +1423,19 @@ fn answer_resume_dialogs(engine: &Weak<Engine>, panes: Vec<PaneId>, mode: Resume
 mod tests {
     use super::*;
 
+    /// A command that holds the pane's foreground for several seconds, typed
+    /// the way the pane's own shell expects it.
+    ///
+    /// Windows needs a real executable: PowerShell's `Start-Sleep` is an
+    /// in-process cmdlet and spawns no child, so nothing would show up in the
+    /// pane's process tree. `ping` against loopback ships with Windows and
+    /// takes about a second per echo. The line also ends in CR, not LF —
+    /// PSReadLine does not treat a bare LF as submit.
+    #[cfg(unix)]
+    const LONG_RUNNING: &[u8] = b"sleep 5\n";
+    #[cfg(windows)]
+    const LONG_RUNNING: &[u8] = b"ping -n 6 127.0.0.1\r";
+
     /// The pin's entire point: `done` belongs to the user, so every *automatic*
     /// status writer must bail on it. Enumerated on purpose — each of these is
     /// a separate code path that has taken the status in the past (hooks/bell
@@ -1471,29 +1484,30 @@ mod tests {
     /// is live and painting. The silence heuristic runs every second and would
     /// call that `processing`.
     ///
-    /// Unix-only: it drives a real `sleep 5` and waits for the PTY's foreground
-    /// process group leader to differ from the shell — foreground-process-group
-    /// semantics that don't map to Windows ConPTY (PowerShell's `sleep` is an
-    /// in-process cmdlet, so no distinct foreground PID appears). On Windows the
-    /// loop would spin to its deadline and fail, so we skip it there; the two
-    /// tests around it are platform-neutral and still cover the pin.
-    #[cfg(unix)]
+    /// It drives a real long-running command and waits for it to take the
+    /// pane's foreground. `Pane::app_running` answers that on both platforms —
+    /// from the foreground process group on Unix, from the shell's live
+    /// children on Windows, where ConPTY has no process groups.
     #[test]
     fn pinned_done_survives_the_silence_heuristic_while_an_app_paints() {
         let engine = Engine::new();
         let (_ws, _tab, id) = engine.create_workspace(None, None, None, 80, 24).unwrap();
         let pane = engine.pane(id).unwrap();
+        pane.answer_cursor_queries();
 
         // The heuristic's live-work branches only engage while a foreground
         // app (not the shell itself) holds the terminal.
-        engine.write_pane(id, b"sleep 5\n").unwrap();
+        engine.write_pane(id, LONG_RUNNING).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
-            let fg = pane.shell_pid();
-            if fg.is_some() && fg != pane.child_pid() {
+            if pane.app_running() {
                 break;
             }
-            assert!(std::time::Instant::now() < deadline, "`sleep` never took the foreground");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{} never took the foreground",
+                String::from_utf8_lossy(LONG_RUNNING).trim(),
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
 
@@ -1509,6 +1523,74 @@ mod tests {
         assert_eq!(*pane.status.lock(), PaneStatus::Done, "the heuristic overwrote the pin");
 
         engine.shutdown();
+    }
+
+    /// The sidebar's working directory, end to end, on the platform where it
+    /// used to come back empty.
+    ///
+    /// Two things have to hold, and the second is the one that is easy to get
+    /// wrong. While a command runs, its directory is the pane's — PowerShell
+    /// hands each command it launches the provider location, so the command
+    /// knows where the user thinks they are even though the shell process
+    /// does not. And once that command exits the answer has to *stay*: the
+    /// shell's own directory is frozen at the one it was spawned in, so
+    /// re-reading it would throw away the truth we just learned.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_pane_reports_the_directory_its_command_runs_in() {
+        let elsewhere = std::env::temp_dir().join(format!("amux-meta-{}", std::process::id()));
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let want = std::fs::canonicalize(&elsewhere).unwrap();
+
+        let engine = Engine::new();
+        // Spawned with no cwd, so the pane starts at the home directory —
+        // somewhere other than `elsewhere`, which is the point.
+        let (_ws, _tab, id) = engine.create_workspace(None, None, None, 80, 24).unwrap();
+        let pane = engine.pane(id).unwrap();
+        pane.answer_cursor_queries();
+
+        // One line: move, then hold the pane with a real process.
+        let line = format!("Set-Location '{}'; ping -n 6 127.0.0.1\r", elsewhere.display());
+        engine.write_pane(id, line.as_bytes()).unwrap();
+
+        // Drive the sweeper by hand, exactly as `start_meta_sweeper` does —
+        // storing each result is what lets the next one build on it.
+        let sweep = || {
+            let fresh = crate::meta::compute(&pane);
+            *pane.meta.lock() = fresh.clone();
+            fresh.cwd.map(std::path::PathBuf::from)
+        };
+        let settled = |cwd: Option<std::path::PathBuf>| {
+            cwd.and_then(|c| std::fs::canonicalize(c).ok()) == Some(want.clone())
+        };
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if settled(sweep()) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pane never reported {want:?}; last saw {:?}",
+                pane.meta.lock().cwd,
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        // Now let `ping` finish and keep sweeping: an idle prompt must not
+        // fall back to the directory the shell was spawned in.
+        let idle_by = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            assert!(settled(sweep()), "cwd was dropped once the command exited");
+            if !pane.app_running() {
+                break;
+            }
+            assert!(std::time::Instant::now() < idle_by, "`ping` never exited");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        engine.shutdown();
+        let _ = std::fs::remove_dir_all(&elsewhere);
     }
 
     /// Each tab owns a separate split tree, so a divider path means nothing
