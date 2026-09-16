@@ -34,8 +34,20 @@ AUTO_TAB = re.compile(r"^탭 (\d+)$")
 AUTO_WS = re.compile(r"^워크스페이스 (\d+)$")
 
 
+WINDOWS = os.name == "nt"
+
+
 def socket_path() -> Path:
-    if explicit := os.environ.get("AMUX_SOCKET"):
+    """amux_protocol::default_socket_name() 과 같은 자리를 가리켜야 한다."""
+    explicit = os.environ.get("AMUX_SOCKET")
+    if WINDOWS:
+        # 윈도우에는 파일시스템 경로가 없다. 이름 하나가 named pipe 로 매핑되고,
+        # 이름은 계정별로 나뉜다 (named pipe 는 기기 전체에서 공유되므로).
+        name = explicit or "amux-%s.sock" % "".join(
+            c if c.isascii() and c.isalnum() else "_" for c in os.environ.get("USERNAME", "user")
+        )
+        return Path(name if name.startswith(r"\\") else r"\\.\pipe" + "\\" + name)
+    if explicit:
         return Path(explicit)
     if runtime := os.environ.get("XDG_RUNTIME_DIR"):
         return Path(runtime) / "amux" / "amux.sock"
@@ -45,22 +57,43 @@ def socket_path() -> Path:
 def session_path() -> Path:
     if explicit := os.environ.get("AMUX_SESSION_FILE"):
         return Path(explicit)
-    base = os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
-    return Path(base) / "amux" / "session.json"
+    # 엔진의 session_path() 와 같은 순서: XDG_CONFIG_HOME → HOME → %APPDATA%.
+    base = os.environ.get("XDG_CONFIG_HOME") or os.environ.get("HOME")
+    if base is None:
+        base = os.environ.get("APPDATA") if WINDOWS else None
+    else:
+        base = Path(base) / ".config"
+    return Path(base or Path.home() / ".config") / "amux" / "session.json"
+
+
+def exchange(sock_path: Path, request: bytes) -> bytes:
+    """줄 하나를 보내고 줄 하나를 받는다. 유닉스 소켓이냐 named pipe 냐만 다르다."""
+    if WINDOWS:
+        # named pipe 는 파일처럼 열어 읽고 쓸 수 있다. 버퍼링을 끄는 것이
+        # 중요하다 — 요청이 버퍼에 남아 있으면 서버는 영영 응답하지 않는다.
+        with open(sock_path, "r+b", buffering=0) as pipe:
+            pipe.write(request)
+            return read_line(pipe.read)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.connect(str(sock_path))
+        s.sendall(request)
+        return read_line(s.recv)
+
+
+def read_line(recv) -> bytes:
+    buf = b""
+    while not buf.endswith(b"\n"):
+        chunk = recv(65536)
+        if not chunk:
+            break
+        buf += chunk
+    return buf
 
 
 def rpc(sock_path: Path, method: str):
     """읽기 전용 JSON-RPC 한 번. 연결마다 새로 열고 닫는다 (CLI와 같은 방식)."""
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        s.connect(str(sock_path))
-        s.sendall((json.dumps({"jsonrpc": "2.0", "id": 1, "method": method}) + "\n").encode())
-        buf = b""
-        while not buf.endswith(b"\n"):
-            chunk = s.recv(65536)
-            if not chunk:
-                break
-            buf += chunk
-    reply = json.loads(buf.decode())
+    request = (json.dumps({"jsonrpc": "2.0", "id": 1, "method": method}) + "\n").encode()
+    reply = json.loads(exchange(sock_path, request).decode())
     if "error" in reply and reply["error"]:
         raise SystemExit(f"amux가 {method} 를 거부했습니다: {reply['error']}")
     return reply["result"]
@@ -100,12 +133,32 @@ def highest_auto(names, pattern) -> int:
     return max((int(m.group(1)) for n in names if (m := pattern.match(n))), default=0)
 
 
+def tabs_of(ws):
+    """워크스페이스의 탭 목록.
+
+    탭 계층은 v0.5.0 에서 들어왔다. 이 스크립트의 존재 이유가 "탭도 자동 저장도
+    없던 버전에서 올라올 때 배치를 건져 내는 것"이므로, 그보다 옛 앱이 돌려주는
+    모양 — 워크스페이스가 곧 분할 트리 하나인 모양 — 도 받아야 한다. 그때는
+    그 트리를 탭 하나로 감싼다.
+    """
+    if "tabs" in ws:
+        return ws["tabs"]
+    return [
+        {
+            "id": ws["id"],
+            "name": "탭 1",
+            "layout": ws["layout"],
+            "active_pane": ws.get("active_pane"),
+        }
+    ]
+
+
 def build_session(workspaces, panes) -> dict:
     panes_by_id = {p["id"]: p for p in panes}
     saved_workspaces = []
     for ws in workspaces:
         tabs = []
-        for tab in ws["tabs"]:
+        for tab in tabs_of(ws):
             order = panes_in_order(tab["layout"])
             active = tab.get("active_pane")
             tabs.append(
@@ -115,13 +168,13 @@ def build_session(workspaces, panes) -> dict:
                     "active_pane": order.index(active) if active in order else 0,
                 }
             )
-        tab_ids = [t["id"] for t in ws["tabs"]]
+        tab_ids = [t["id"] for t in tabs_of(ws)]
         saved_workspaces.append(
             {
                 "name": ws["name"],
                 "tabs": tabs,
                 "active_tab": tab_ids.index(ws["active_tab"]) if ws.get("active_tab") in tab_ids else 0,
-                "tab_created_count": highest_auto([t["name"] for t in ws["tabs"]], AUTO_TAB),
+                "tab_created_count": highest_auto([t["name"] for t in tabs], AUTO_TAB),
             }
         )
     return {
@@ -142,12 +195,18 @@ def main() -> int:
     args = ap.parse_args()
 
     sock = socket_path()
-    if not sock.exists():
+    # named pipe 는 exists() 로 확인되지 않는다 (파일시스템에 없으므로). 어차피
+    # 열어 보면 바로 알 수 있으니, 양쪽 모두 연결 실패를 같은 문구로 옮긴다.
+    if not WINDOWS and not sock.exists():
         print(f"amux 소켓이 없습니다: {sock}\namux가 켜져 있는지 확인하세요.", file=sys.stderr)
         return 1
 
-    workspaces = rpc(sock, "workspace.list")
-    panes = rpc(sock, "pane.list")
+    try:
+        workspaces = rpc(sock, "workspace.list")
+        panes = rpc(sock, "pane.list")
+    except OSError as e:
+        print(f"amux 에 연결하지 못했습니다 ({sock}): {e}\namux가 켜져 있는지 확인하세요.", file=sys.stderr)
+        return 1
     session = build_session(workspaces, panes)
     if not session["workspaces"]:
         print("열려 있는 워크스페이스가 없어 저장할 배치가 없습니다.", file=sys.stderr)
@@ -165,7 +224,7 @@ def main() -> int:
     tmp.replace(out)
 
     tab_count = sum(len(w["tabs"]) for w in session["workspaces"])
-    pane_count = sum(len(panes_in_order(t["layout"])) for w in workspaces for t in w["tabs"])
+    pane_count = sum(len(panes_in_order(t["layout"])) for w in workspaces for t in tabs_of(w))
     print(f"저장했습니다: {out}")
     print(f"  워크스페이스 {len(session['workspaces'])}개, 탭 {tab_count}개, 터미널 {pane_count}개")
     return 0
