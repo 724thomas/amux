@@ -12,6 +12,12 @@ import {
 } from "./ipc";
 import { activePane, activeWorkspace, app, broadcast, palette, dashboard } from "./state.svelte";
 import { adjustFontSize, resetFontSize } from "./settings.svelte";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+
+async function toggleFullscreen() {
+  const win = getCurrentWindow();
+  await win.setFullscreen(!(await win.isFullscreen()));
+}
 
 interface Rect {
   x: number;
@@ -143,6 +149,17 @@ export function handleKey(e: KeyboardEvent): boolean {
   }
 
   if (e.altKey && !e.ctrlKey && !e.shiftKey) {
+    // Alt+Enter → toggle window fullscreen. Guard the double dispatch (the
+    // window listener + xterm's key handler both see this keydown) so the
+    // toggle fires exactly once — two flips would cancel out.
+    if (e.key === "Enter") {
+      const ev = e as KeyboardEvent & { __amuxFs?: boolean };
+      if (!ev.__amuxFs) {
+        ev.__amuxFs = true;
+        void toggleFullscreen();
+      }
+      return true;
+    }
     const dir = {
       ArrowLeft: "left",
       ArrowRight: "right",
