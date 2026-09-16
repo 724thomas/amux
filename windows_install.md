@@ -17,11 +17,11 @@
 
 - **스택**: Tauri 2 (Rust 백엔드) + Svelte 5 + xterm.js (프론트엔드). 가짜 터미널(PTY)은
   `portable-pty`가 윈도우 ConPTY로, CLI↔앱 통신은 `interprocess`가 윈도우 named pipe로
-  알아서 처리합니다. 즉 **윈도우 고유 코드는 거의 없고**, 필요한 건 주로 빌드 도구입니다.
-- **정직한 전제**: 이 코드는 리눅스에서 빌드·테스트가 모두 통과(green)했지만, **윈도우
-  컴파일러로는 검증되지 않았습니다.** cfg(windows) 분기(아래 §6)는 리눅스에서 컴파일되지
-  않는 부분이라, 만에 하나 에러가 나면 거기일 가능성이 높습니다. 설계 의도와 고치는 법을
-  §6·§8에 적어뒀습니다.
+  알아서 처리합니다. 즉 **윈도우 고유 코드는 많지 않고**, 필요한 건 주로 빌드 도구입니다.
+- **정직한 전제**: 이 코드는 **실제 윈도우 PC에서 빌드·테스트·실행까지 확인됐습니다**
+  (Windows 11 / MSVC / PowerShell 5.1). 사이드바 메타데이터·프로세스 트리·폰 사이드카의
+  윈도우 분기도 실기 테스트가 붙어 있습니다(§4). 그래도 환경은 저마다 다르니, 막히면
+  §8의 설계 의도와 §10의 증상별 표를 보세요.
 - **사람의 승인이 필요한 단계가 있습니다**: 빌드 도구 설치(특히 MSVC)는 관리자 권한(UAC)
   팝업을 띄웁니다. 완전 무인은 아니고, 사용자가 UAC를 한두 번 눌러줘야 합니다.
 - **소스 확보**: 윈도우 포팅은 **`main`에 병합**되어 있습니다. `main`을 clone 하면 됩니다.
@@ -130,13 +130,26 @@ bun run tauri dev
 
 ```powershell
 cargo build --workspace
-cargo test -p amux-core
+cargo test --workspace --exclude amux-app
 ```
 
-- `cargo test -p amux-core`에는 **`server::tests::ipc_round_trip`** 가 들어 있습니다. 이건
-  서버를 띄우고 클라이언트가 **named pipe로 실제 왕복 통신**을 하는 테스트라, 통과하면
-  윈도우 IPC(앱↔CLI 통신)가 런타임에 동작한다는 직접 증거입니다.
-- `pane::tests::echo_round_trip` 는 실제 셸(PowerShell)을 띄워 출력을 읽는 테스트입니다.
+전부 실제 OS를 건드리는 테스트라, 통과하면 그 기능이 런타임에 동작한다는 직접 증거입니다.
+
+- **`server::tests::ipc_round_trip`** — 서버를 띄우고 클라이언트가 **named pipe로 실제 왕복
+  통신**을 합니다. 윈도우 IPC(앱↔CLI 통신)가 되는지.
+- **`pane::tests::echo_round_trip`** — 실제 셸(PowerShell)을 띄워 출력을 읽습니다. ConPTY가
+  시작할 때 던지는 커서 위치 질의(`ESC[6n`)에 답해 줘야 셸이 출력을 흘리기 시작하는데,
+  실제 앱에서는 xterm.js가 하는 그 일을 테스트에서는 `Pane::answer_cursor_queries()` 가
+  대신합니다. 제출 키가 LF가 아니라 **CR** 인 것도 여기서 드러납니다(PSReadLine).
+- **`win_proc::tests::*`** — 프로세스 트리(자식 등장 / 형제 중 최신 / 자식 없음 / 스냅샷
+  공유·만료). 사이드바 메타데이터와 상태 칩이 전부 여기에 얹혀 있습니다.
+- **`meta::cwd::windows_smoke::*`** — 자기 자신과 **다른 프로세스**의 작업 폴더 읽기.
+- **`meta::ports::windows_smoke::*`** — 자기 포트와 **자식이 쥔 포트** 탐지.
+- **`engine::tests::a_windows_pane_reports_the_directory_its_command_runs_in`** — 끝에서 끝까지.
+  pane을 띄우고 `Set-Location` 으로 옮긴 뒤 명령을 돌려, 사이드바에 뜰 폴더가 맞게 잡히고
+  **명령이 끝난 뒤에도 유지되는지** 봅니다 (§9-1의 PowerShell 함정).
+- **`tls::tests::*`** (amux-phone) — 발급자가 보증하는 주소 범위, 그리고 실제 발급자를 만들어
+  사설망 주소로 인증서를 찍는 것까지.
 
 ---
 
@@ -145,14 +158,18 @@ cargo test -p amux-core
 배포용 NSIS 설치본을 만들려면:
 
 ```powershell
-cargo build --release -p amux-cli   # target\release\amux.exe (CLI) 생성
-bun run tauri build                 # tauri.windows.conf.json 덕에 NSIS 설치본(.exe) 생성
+cargo build --release -p amux-cli -p amux-phone   # amux.exe (CLI) + amux-phone.exe
+bun run tauri build                               # tauri.windows.conf.json 덕에 NSIS 설치본(.exe) 생성
 ```
 
 - 산출물: `src-tauri\target\release\bundle\nsis\*-setup.exe` (또는 `target\release\bundle\nsis\`).
 - `tauri build`가 처음 실행될 때 NSIS를 자동으로 내려받습니다(별도 설치 불필요).
 - ⚠️ `tauri build` 전에 반드시 `cargo build --release -p amux-cli`를 먼저 — 설정이
   `amux.exe`를 동봉하려 하지 않더라도, CLI는 PATH에 둬야 쓸 수 있습니다(다음 절).
+- ⚠️ **이미 amux가 떠 있으면 빌드가 링크 단계에서 깨집니다.** 윈도우는 실행 중인
+  `.exe`를 덮어쓰지 못합니다. 빌드 전에 앱을 닫으세요
+  (`Get-Process amux-app -ErrorAction SilentlyContinue | Stop-Process`).
+- `amux-phone`은 설치본에 들어가지 않습니다 — 폰 기능은 §12 참고.
 
 ---
 
@@ -213,6 +230,11 @@ windows job이 실검증)와 **모든 런타임 동작**뿐입니다. 컴파일 
 | `crates/amux-core/src/server.rs` | `local_name()`의 `to_ns_name`, `#[cfg(unix)]` 디렉터리 준비 블록은 윈도우에서 건너뜀 | named pipe 리스너 |
 | `crates/amux-cli/src/main.rs` | `local_name()`의 `to_ns_name` | named pipe 클라이언트 |
 | `crates/amux-core/src/pane.rs` | `#[cfg(windows)]` 셸 선택(`powershell.exe`, `AMUX_SHELL` 오버라이드) | 윈도우 기본 셸 |
+| `crates/amux-core/src/win_proc.rs` | 파일 전체가 `#[cfg(windows)]` | pane 셸의 프로세스 트리 — ConPTY 에 없는 포그라운드 프로세스 그룹을 대신합니다. ToolHelp 스냅샷 하나를 0.5초 동안 공유 |
+| `crates/amux-core/src/meta/mod.rs` | `foreground_pid()` · `resolve_cwd()` 의 `#[cfg(windows)]` | 어느 PID 에게 cwd 를 물을지 고르는 자리 |
+| `crates/amux-core/src/meta/cwd.rs` | `#[cfg(windows)]` 분기 (`sysinfo`) | 프로세스의 작업 폴더는 PEB 에 있고 오프셋이 비공개라 sysinfo 에 위임 |
+| `crates/amux-core/src/meta/ports.rs` | `#[cfg(windows)] mod imp` (`GetExtendedTcpTable`) | LISTEN 포트. 윈도우 TCP 테이블은 소유 PID 를 직접 줍니다 |
+| `crates/amux-phone/src/tls.rs` | `config_base()` 의 `%APPDATA%` 폴백 | 윈도우엔 `$HOME`/XDG 가 없어, 없으면 CA 개인키가 실행 폴더에 떨어집니다 |
 
 **고칠 때 참고할 API 모양 (버전이 바뀌었으면 해당 크레이트 문서를 확인):**
 
@@ -227,7 +249,8 @@ windows job이 실검증)와 **모든 런타임 동작**뿐입니다. 컴파일 
   `no method named process_group_leader`로 **컴파일이 막혀 `amux-core`가 통째로 빌드 실패**하고,
   그러면 `bunx tauri build`(→ `amux-app` → `amux-core`)도 실패해 **.exe가 아예 안 만들어집니다.**
   그래서 `pane.rs::shell_pid()`를 `#[cfg(unix)]`로 감싸 **윈도우에선 `None`**, Unix 분기는
-  글자 그대로 유지하도록 했습니다. 결과적으로 사이드바 cwd/git는 윈도우에서 빈 값이 됩니다(§9).
+  글자 그대로 유지하도록 했습니다. 윈도우 쪽 호출자는 이걸 쓰지 않고 `win_proc` 의
+  프로세스 트리에 같은 질문을 합니다 (§9-1).
 
 자가검증은 `cargo test -p amux-core` (특히 `ipc_round_trip` = named pipe 왕복).
 
@@ -237,18 +260,32 @@ windows job이 실검증)와 **모든 런타임 동작**뿐입니다. 컴파일 
 
 이건 의도된 v1 한계입니다. "안 되는 것"이 아니라 "아직 안 채운 것"입니다.
 
-1. **사이드바의 cwd(작업 폴더)·리슨 포트가 윈도우에선 비어 보입니다.** 이 정보는 리눅스의
-   `/proc` 가상 파일시스템에서 읽는데 윈도우엔 `/proc`가 없어, 코드가 그냥 빈 값을 돌려줍니다
-   (우아하게 비활성화). git 브랜치는 `.git`을 직접 읽으므로 윈도우에서도 표시됩니다.
-   - **채우고 싶다면 (선택 작업):** `meta/cwd.rs`·`meta/ports.rs`에는 이미 리눅스
-     `#[cfg(target_os="linux")]`와 **macOS `#[cfg(target_os="macos")]`(libproc)** 분기가
-     나란히 있습니다. 같은 자리에 `#[cfg(windows)]` 분기를 하나 더 넣으면 됩니다 —
-     macOS 분기가 "OS 네이티브 API로 cwd/포트를 채우는" 살아있는 템플릿입니다.
-     - cwd: `meta/cwd.rs`에 `#[cfg(windows)]` 분기를 추가하고 `sysinfo` 크레이트의
-       `sys.process(Pid).cwd()`로 구현.
-     - 리슨 포트: `meta/ports.rs`에 `#[cfg(windows)]` 분기 — `netstat2` 크레이트로 LISTEN
-       상태 TCP를 PID와 함께 얻고, `sysinfo`로 자식 프로세스 트리를 모아 그 PID들 소유 포트만
-       필터. (리눅스의 inode 매칭 방식과 달리 윈도우 TCP 테이블은 소유 PID를 직접 줍니다.)
+1. **사이드바의 cwd·git 브랜치·리슨 포트는 채워집니다. 단, 프롬프트가 놀고 있는 동안의
+   `cd`는 다음 명령을 칠 때까지 반영되지 않습니다.**
+
+   유닉스는 PTY에게 "지금 이 pane의 포그라운드가 누구냐"를 물으면 되지만(`tcgetpgrp`),
+   ConPTY에는 프로세스 그룹이 없습니다. 그래서 윈도우는 **셸의 자손 프로세스**로 대신
+   답합니다(`win_proc.rs`) — 프롬프트에서 친 명령은 셸의 자식으로 뜨니까요.
+
+   여기에 PowerShell 특유의 함정이 하나 있고, 이게 위 제약의 이유입니다.
+   **`Set-Location`은 PowerShell의 provider 위치만 옮기고 프로세스 작업 폴더는 그대로
+   둡니다**(런스페이스가 공유하는 값이라 스레드 안전하지 않아 일부러 그럽니다). 즉 셸
+   자신에게 물으면 영원히 "amux가 처음 띄운 폴더"가 나옵니다. 대신 PowerShell은 자기가
+   띄우는 명령에는 provider 위치를 작업 폴더로 물려주므로, **돌고 있는 명령이 정답을
+   압니다.** 명령이 끝난 뒤에는 그 답을 그대로 유지합니다 — 사용자가 `cd`를 치는 건
+   볼 수 없지만, 이미 틀린 걸 아는 폴더로 되돌아가는 것보다 낫기 때문입니다.
+
+   실제로 겪는 모습: pane을 열고 `cd 프로젝트` 만 치면 사이드바는 아직 홈 폴더를
+   가리킵니다. 거기서 `claude`(또는 아무 외부 명령)를 한 번 띄우면 그때 맞는 폴더로
+   바뀌고, 그 뒤로는 유지됩니다. amux의 용도가 에이전트 병렬 실행이라 실사용에서는
+   거의 걸리지 않습니다.
+
+   - cwd: `meta/cwd.rs`의 `#[cfg(windows)]` — 작업 폴더는 PEB에 있고 오프셋이 문서화돼
+     있지 않아, 이미 그걸 읽는(32/64비트 차이까지 처리하는) `sysinfo`에 맡깁니다.
+   - 리슨 포트: `meta/ports.rs`의 `#[cfg(windows)] mod imp` — `GetExtendedTcpTable`의
+     LISTEN 목록을 프로세스 트리로 거릅니다. 리눅스의 inode 매칭과 달리 윈도우 TCP
+     테이블은 소유 PID를 직접 주므로 fd를 훑을 필요가 없습니다.
+   - git 브랜치는 `.git`을 직접 읽으므로 cwd만 맞으면 따라옵니다.
 2. **데스크톱 토스트 알림이 처음엔 안 뜰 수 있습니다.** notify-rust의 윈도우 토스트는 앱이
    설치되어 AppUserModelID로 등록돼 있어야 뜹니다. NSIS 설치본(§5)으로 설치하면 동작하고,
    `bun run tauri dev`로 띄운 개발 모드에선 조용할 수 있습니다. (사이드바 "지금 봐야 할
@@ -256,18 +293,20 @@ windows job이 실검증)와 **모든 런타임 동작**뿐입니다. 컴파일 
 3. **"이미 다른 인스턴스가 떠 있음" 가드가 윈도우엔 없습니다.** 유닉스는 stale 소켓을
    정리/감지하지만 named pipe는 다중 인스턴스를 허용합니다. 두 개를 동시에 띄우지 마세요.
    (parity 항목 — v1 차단 요소 아님.)
-4. **hook 없이는 상태 칩(🔴 작업 중 / 🟢 완료 / 🟡 입력 대기)이 윈도우에서 부정확할 수
-   있습니다.** amux는 pane 출력이 조용해지는 패턴으로 상태를 추측하는 휴리스틱(heuristic,
-   경험적 추정)을 쓰는데, "지금 포그라운드에 어떤 앱이 도는가"를 유닉스 프로세스 그룹으로
-   판별합니다. 윈도우 ConPTY엔 프로세스 그룹이 없어(위 §8 `shell_pid()`가 `None`) 이 판별이
-   빠지고 추정이 헐거워집니다. **해결: §7의 Claude 상태 hook을 설치하세요** — hook은 Claude가
-   상태를 직접 통보하므로 프로세스 그룹 추정에 의존하지 않고 윈도우에서도 정확합니다.
-5. **kitty 키보드 모드 자동 정리가 윈도우에선 동작하지 않습니다.** Claude Code 같은 앱이 켜는
-   특수 키보드 모드(kitty keyboard protocol)를, 앱이 **비정상 종료**하면 amux가 "셸이 다시
-   포그라운드로 돌아온 것"을 감지해 꺼줍니다(`meta/mod.rs`의 `compute()`). 이 감지도 프로세스
-   그룹에 의존해 윈도우에선 빠집니다. 영향 범위는 좁습니다 — 앱이 **정상 종료**하면 스스로
-   모드를 끄므로 문제없고, 앱이 **크래시**한 드문 경우에만 직후 셸 입력이 잠깐 이상해질 수
-   있습니다(새 셸/pane이면 정상). 윈도우용 깔끔한 대체 수단이 마땅치 않아 v1 한계로 둡니다.
+4. **상태 칩(🔴 작업 중 / 🟢 완료 / 🟡 입력 대기)의 "지금 뭔가 돌고 있나" 판별은 윈도우에서도
+   동작합니다.** amux는 pane 출력이 조용해지는 패턴으로 상태를 추측하는 휴리스틱(heuristic,
+   경험적 추정)을 쓰는데, 그 재료인 "포그라운드에 앱이 도는가"를 윈도우에서는 셸의 자식
+   프로세스 유무로 봅니다(`Pane::app_running`). 한 가지 사각지대: **PowerShell 안에서만 도는
+   cmdlet**(`Start-Sleep`, `1..9 | %{...}` 등)은 자식을 만들지 않아 잡히지 않습니다. 외부
+   실행 파일(claude, node, npm, git…)은 모두 잡히므로 실사용에는 영향이 없습니다.
+   그래도 **§7의 Claude 상태 hook을 설치하는 편이 정확합니다** — hook은 Claude가 상태를 직접
+   통보하므로 추정에 의존하지 않습니다.
+5. **kitty 키보드 모드 자동 정리도 이제 윈도우에서 돌아갑니다(단, 실사용 검증은 아직).**
+   Claude Code 같은 앱이 켜는 특수 키보드 모드(kitty keyboard protocol)를, 앱이 **비정상
+   종료**하면 amux가 "셸이 다시 포그라운드로 돌아온 것"을 감지해 꺼줍니다(`meta/mod.rs`의
+   `compute()`). 이 감지는 `fg_pid == child_pid()` 비교인데, 윈도우 `foreground_pid()`가
+   자식이 없을 때 셸 자신을 돌려주므로 유닉스와 같은 뜻이 됐습니다. 애초에 영향 범위가 좁아
+   (앱이 **정상 종료**하면 스스로 모드를 끕니다) 크래시를 일부러 재현해 확인하지는 않았습니다.
 
 ---
 
@@ -282,16 +321,61 @@ windows job이 실검증)와 **모든 런타임 동작**뿐입니다. 컴파일 
 | `amux: command not found` (pane 안에서) | `amux.exe`가 PATH에 없음 → §6 |
 | hook이 안 먹음 | ① `amux.exe` PATH(§6) ② Claude Code 세션 재시작 필요 |
 | `tauri build` 중 NSIS 관련 실패 | 첫 실행은 NSIS를 내려받습니다(네트워크 필요). 재시도 |
+| 빌드가 링크 단계에서 "Access is denied" / 파일 사용 중 | amux가 떠 있습니다. 닫고 다시 → §5 |
+| `.ps1` 실행했더니 한글이 깨져 나옴 | BOM 없이 저장된 스크립트. UTF-8 **BOM 포함**으로 저장 → §12 |
+| 폰이 `https://<주소>:8000` 에 못 붙음 | ① 방화벽 규칙 없음 ② 발급자 미설치 → §12 |
 
 ---
 
-## 11. 윈도우 Claude를 위한 한 줄 요약(작업 순서)
+## 12. 폰에서 보기 (amux-phone, 선택)
+
+자리를 비운 사이 폰으로 pane을 들여다보는 사이드카입니다. 리눅스·macOS는
+`scripts/phone.sh`, **윈도우는 `scripts\phone.ps1`** 로 켭니다 (같은 일을 합니다).
+
+```powershell
+cargo build --release -p amux-phone
+
+scripts\phone.ps1 -Setup   # 맨 처음 한 번 — 폰에 발급자(인증서)를 설치
+scripts\phone.ps1          # 평소 — 켜고 나갔다가 돌아와서 Ctrl+C
+scripts\phone.ps1 -Pair    # 새 폰을 등록할 때 (QR + 6자리 코드)
+```
+
+스크립트가 알아서 하는 것:
+
+- **주소**를 라우팅 표에서 매번 찾습니다. DHCP 임대는 바뀌니까요.
+- **사설 대역(10.x · 172.16~31.x · 192.168.x)이 아니면 아예 뜨지 않습니다.** 공인 주소로
+  바인딩하면 인터넷 전체에 포트를 여는 셈이라서입니다. 사내망(10.x)이 아닌 사설 대역이면
+  "같은 공유기에 붙은 기기는 닿을 수 있다"고 경고합니다 — 집 공유기와 카페 와이파이는
+  주소만 봐서는 구분되지 않습니다.
+- **윈도우 방화벽**에 해당 포트를 여는 규칙이 없으면 알려줍니다. 리눅스의 ufw 절과 같은
+  자리지만 더 자주 걸립니다 — 윈도우 방화벽은 기본으로 켜져 들어오는 연결을 막습니다.
+  ```powershell
+  # 관리자 PowerShell. 지금 붙어 있는 망(Private)에서만 열립니다.
+  New-NetFirewallRule -DisplayName 'amux phone' -Direction Inbound `
+    -Action Allow -Protocol TCP -LocalPort 8000 -Profile Private
+  ```
+
+알아둘 것:
+
+- 발급자(CA)와 설정은 **`%APPDATA%\amux\`** 에 들어갑니다 (유닉스의 `~/.config/amux/` 자리).
+- 발급자는 사설 대역만 보증하도록 제한돼 있고 **도메인 이름은 전면 배제**합니다. 즉 이
+  발급자를 신뢰하는 폰이 속을 수 있는 최대치는 "사설망의 어떤 기기"이지 웹사이트가 아닙니다.
+- **v0.5.0 이전에 만든 발급자가 있으면** 10.x 만 보증합니다. 192.168 주소로 켜려 하면 시작
+  단계에서 막고 안내합니다 — `%APPDATA%\amux\ca\` 의 `ca.crt`·`ca.key` 를 지우고
+  `-Setup` 으로 다시 만든 뒤 폰에 재설치하세요.
+- **`.ps1` 은 UTF-8 BOM 으로 저장해야 합니다.** Windows PowerShell 5.1은 BOM이 없으면
+  스크립트를 ANSI 코드페이지로 읽어 한글 안내문이 전부 깨집니다. 편집기가 BOM을 떼지
+  않도록 주의하세요.
+
+---
+
+## 13. 윈도우 Claude를 위한 한 줄 요약(작업 순서)
 
 1. §1 도구 설치 (특히 §1-1 MSVC — UAC 승인) → 새 셸 열기
 2. §2 소스 clone (윈도우 변경 포함 브랜치)
 3. `bun install` → `bun run tauri dev` 로 **뜨는지 확인** (§3)
 4. `cargo test -p amux-core` 로 IPC·셸 자가검증 (§4)
-5. 필요 시 §5 설치본, §6 PATH, §7 hooks
+5. 필요 시 §5 설치본, §6 PATH, §7 hooks, §12 폰
 6. 컴파일/동작 문제 → §8(미검증 지도)·§10(문제 해결)
 
 문제가 막히면, 어떤 단계에서 어떤 에러가 났는지 그대로 사용자에게 보고하고, §8의 설계

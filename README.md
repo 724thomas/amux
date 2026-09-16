@@ -22,6 +22,27 @@ AI 코딩 에이전트(Claude Code 등)를 **병렬로** 돌리기 위한 데스
 ## 변경 내역
 
 ### 미출시 (main)
+- **🪟 윈도우 기능 채우기** — 윈도우는 빌드·실행은 되지만 리눅스/macOS 전용으로 남아
+  있던 기능들이 있었다. 셋을 채웠다.
+  - **사이드바의 cwd·git 브랜치·리슨 포트.** 유닉스는 PTY에 "이 pane의 포그라운드가
+    누구냐"를 물으면 되지만(`tcgetpgrp`) ConPTY엔 프로세스 그룹이 없어, `shell_pid()`가
+    `None`이었고 그걸로 cwd를 조회하던 호출부 탓에 전부 빈 값이었다. 엔진이 pane에 대해
+    묻는 세 가지(뭔가 돌고 있나·어느 폴더인가·어떤 포트를 쥐었나)를 모두 "셸의 자손"으로
+    환원해 ToolHelp 스냅샷 하나로 답하는 `win_proc`을 두고, cwd는 `sysinfo`(PEB), 포트는
+    `GetExtendedTcpTable`로 채웠다. PowerShell의 `Set-Location`은 provider 위치만 옮기고
+    프로세스 작업 폴더는 그대로 두므로, 돌고 있는 명령에게 묻고 끝난 뒤에도 그 답을 유지한다
+    ([`windows_install.md`](windows_install.md) §9-1).
+  - **폰 사이드카(amux-phone).** 켜는 스크립트가 bash뿐이라 윈도우에는 켤 길이 아예
+    없었다. `scripts/phone.ps1`(주소 탐지·사설망 확인·윈도우 방화벽 점검)을 추가하고,
+    설정·CA 경로가 윈도우에서 `.`으로 떨어지던 것을 `%APPDATA%`로 고쳤다. 발급자의 보증
+    범위도 10.0.0.0/8에서 사설 대역 전체로 넓혔다 — 집·소규모 사무실 공유기(192.168.x)에서는
+    시작조차 막혀 있었다. 세 대역 모두 인터넷에 라우팅되지 않고 도메인 배제도 그대로다.
+  - **`scripts/capture-session.py`** — 유닉스 소켓 전용이던 것을 named pipe로도 붙게 했고,
+    "탭도 자동 저장도 없던 옛 버전에서 배치를 건져 낸다"는 제 용도에서 `KeyError: 'tabs'`로
+    죽던 것을 고쳤다(리눅스에서 0.4.x로부터 올라올 때도 같은 문제였다).
+  - 검증: `pinned_done_survives_the_silence_heuristic_while_an_app_paints`의 `#[cfg(unix)]`
+    게이트 해제 + 윈도우 실기 테스트 10개(프로세스 트리·cwd·포트·발급자 범위·사이드바
+    end-to-end). 상세는 [`windows_install.md`](windows_install.md) §4.
 - **🍎 macOS 지원** — 원래 Ubuntu 전용이던 앱을 macOS(Apple Silicon)에서도 빌드·실행되도록
   이식. 코어는 이미 크로스플랫폼(IPC=`interprocess` Unix 소켓, PTY=`portable-pty`)이라,
   리눅스 `/proc`에 의존하던 메타데이터 수집만 macOS 경로를 새로 붙였다.
@@ -230,6 +251,15 @@ Releases에서 윈도우 설치본(`amux_0.5.0_x64-setup.exe` 형태)을 받아 
 [`windows_install.md`](windows_install.md)를 참고하세요. (윈도우 바이너리는 리눅스에서 만들 수
 없어, `v*` 태그를 푸시하면 GitHub Actions의 windows-latest 러너가 자동으로 빌드해 같은
 릴리스에 첨부합니다.)
+
+- pane의 현재 디렉토리·git 브랜치·리슨 포트는 리눅스의 `/proc` 대신 Win32(프로세스 트리 +
+  TCP 테이블)로 동작합니다. 한 가지 차이: 프롬프트에서 `cd`만 하고 아무것도 실행하지 않으면
+  다음 명령을 칠 때까지 폴더 표시가 따라오지 않습니다 (PowerShell의 `Set-Location`이 프로세스
+  작업 폴더를 바꾸지 않기 때문 — [`windows_install.md`](windows_install.md) §9-1).
+- 폰에서 보기는 `scripts\phone.ps1` 로 켭니다 (§12). 윈도우 방화벽이 기본으로 막고 있어
+  규칙을 한 번 열어 줘야 합니다 — 스크립트가 필요할 때 명령을 알려줍니다.
+- 데스크톱 토스트 알림은 **설치본으로 설치했을 때** 뜹니다(AppUserModelID 등록이 필요).
+  `bun run tauri dev` 개발 모드에서는 조용할 수 있습니다.
 
 **macOS (Apple Silicon/Intel)** — 소스에서 빌드:
 
