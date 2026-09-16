@@ -170,17 +170,20 @@ async fn main() -> anyhow::Result<()> {
     // 서명은 어차피 되지만, 발급자가 보증하지 못하는 이름이면 모든 클라이언트가
     // 거부합니다. 이 PC 에서는 멀쩡해 보이고 폰에서만 오류가 나는 형태라, 뜨기
     // 전에 막습니다. IPv6 도 여기서 걸립니다 - 허용 범위가 IPv4 뿐입니다.
-    if cli.tls && !tls::covers(cli.bind.ip()) {
+    let ca_dir = tls::default_ca_dir();
+    if cli.tls && !tls::covers(&ca_dir, cli.bind.ip()) {
         anyhow::bail!(
             "{} 은 이 발급자가 보증할 수 있는 범위 밖입니다.\n\
-             발급자는 10.0.0.0/8 과 127.0.0.0/8 만 보증하도록 제한돼 있어서, 그 밖의 주소로\n\
-             인증서를 찍으면 폰이 거부합니다. 사내 주소나 loopback 으로 바인딩하세요.",
-            cli.bind.ip()
+             발급자는 사설망 주소(10.x · 172.16~31.x · 192.168.x)와 loopback 만 보증하도록\n\
+             제한돼 있어서, 그 밖의 주소로 인증서를 찍으면 폰이 거부합니다.\n\
+             이미 만들어둔 발급자가 10.x 만 보증하는 옛 형식이면 여기서도 걸립니다 —\n\
+             그때는 {}/ca.crt 와 ca.key 를 지우고 --setup 으로 새로 만드세요.",
+            cli.bind.ip(),
+            ca_dir.display()
         );
     }
 
     let mut ca_fingerprint: Option<String> = None;
-    let ca_dir = tls::default_ca_dir();
     let (tls_config, ca_pem) = if cli.tls {
         let ca = tls::Ca::load_or_create(&ca_dir)?;
         let (chain, key) = ca.issue_for(cli.bind.ip())?;
@@ -395,9 +398,5 @@ fn outbound_ip() -> Option<IpAddr> {
 }
 
 fn config_path() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("amux").join("phone.json")
+    tls::config_base().join("amux").join("phone.json")
 }
