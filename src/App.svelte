@@ -1,18 +1,105 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import Sidebar from "./lib/Sidebar.svelte";
   import SplitNode from "./lib/SplitNode.svelte";
   import Palette from "./lib/Palette.svelte";
   import Dashboard from "./lib/Dashboard.svelte";
-  import { app, initState, broadcast, palette, dashboard, activeWorkspacePaneCount } from "./lib/state.svelte";
+  import {
+    app,
+    initState,
+    broadcast,
+    palette,
+    dashboard,
+    activeTabPaneCount,
+    canRestoreSession,
+    focusTerm,
+    restoreOffer,
+    restorePreviousSession,
+    tabCreate,
+    tabHasBadge,
+    tabStatus,
+  } from "./lib/state.svelte";
+  import {
+    closeTab,
+    focusTab,
+    moveTab,
+    newTab,
+    renameTab,
+    type TabId,
+    type WorkspaceId,
+  } from "./lib/ipc";
   import { handleKey } from "./lib/keymap";
   import { setSidebarWidth, settings } from "./lib/settings.svelte";
   import { themeById } from "./lib/themes";
 
   const snapshot = $derived(app.snapshot);
-  const bcastCount = $derived(activeWorkspacePaneCount());
+  const bcastCount = $derived(activeTabPaneCount());
+
+  // Restore offer: shown over the empty main area when the previous run left a
+  // saved arrangement behind. Only while nothing is open — once a workspace
+  // exists the card would be covering live terminals, and the palette entry
+  // (Ctrl+Shift+P) takes over as the way in.
+  const offerRestore = $derived(canRestoreSession() && !(snapshot?.workspaces.length ?? 0));
+  const savedAtLabel = $derived.by(() => {
+    const ms = restoreOffer.summary?.saved_at_ms;
+    if (!ms) return "";
+    return new Date(ms).toLocaleString("ko-KR", {
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  });
 
   let draggingSidebar = $state(false);
+
+  // Tab-bar interactions. Renaming is inline (double-click a tab); dragging a
+  // tab onto another reorders it, mirroring the sidebar's workspace drag.
+  let renamingTab = $state<TabId | null>(null);
+  let renameValue = $state("");
+  let draggedTab = $state<TabId | null>(null);
+
+  function startRenameTab(tab: TabId, name: string) {
+    renamingTab = tab;
+    renameValue = name;
+    void tick().then(() => document.querySelector<HTMLInputElement>(".tab-rename")?.select());
+  }
+
+  function commitRenameTab() {
+    if (renamingTab && renameValue.trim()) void renameTab(renamingTab, renameValue.trim());
+    renamingTab = null;
+  }
+
+  // New-tab title prompt. Opened by the tab bar "+", Ctrl+T or the palette —
+  // all three only set `tabCreate.workspace`, and the input below is the single
+  // place a tab is actually born. A blank name falls through to the engine's
+  // auto-name (`탭 N`), so Ctrl+T then Enter is still a one-beat "just give me
+  // a tab".
+  let newTabName = $state("");
+  let newTabInput = $state<HTMLInputElement | null>(null);
+  // A plain `autofocus` attribute doesn't fire on a dynamically-mounted input
+  // in this webview (the Palette and the new-workspace prompt hit the same
+  // thing), so focus it explicitly once the prompt opens.
+  $effect(() => {
+    if (tabCreate.workspace) newTabInput?.focus();
+  });
+
+  function startCreateTab(workspace: WorkspaceId) {
+    newTabName = "";
+    tabCreate.workspace = workspace;
+  }
+
+  function commitCreateTab(workspace: WorkspaceId) {
+    const name = newTabName.trim();
+    tabCreate.workspace = null;
+    newTabName = "";
+    void newTab(workspace, name || undefined);
+  }
+
+  function cancelCreateTab() {
+    tabCreate.workspace = null;
+    newTabName = "";
+  }
 
   onMount(() => {
     void initState();
@@ -41,7 +128,7 @@
     title="브로드캐스트 해제 (클릭 또는 Ctrl+Shift+B)"
   >
     <span class="bolt">⚡</span>
-    BROADCAST — 입력이 {bcastCount}개 pane에 동시 전송됩니다
+    BROADCAST — 입력이 이 탭의 {bcastCount}개 pane에 동시 전송됩니다
     <span class="hint">클릭 · Ctrl+Shift+B 해제</span>
   </button>
 {/if}
@@ -90,16 +177,162 @@
     ondblclick={() => setSidebarWidth(230)}
   ></div>
   <main class="main">
-    <!-- Every workspace stays mounted so its terminals keep their xterm
-         buffers; only the active one is displayed. -->
+    <!-- 지난 세션 복구 카드. 앱이 갑자기 꺼져도 워크스페이스·탭 이름과 분할
+         모양은 디스크에 남아 있으므로, 빈 화면 대신 "한 번에 되살리기"를
+         먼저 제안한다. -->
+    {#if offerRestore && restoreOffer.summary}
+      <div class="restore">
+        <div class="restore-card">
+          <h2>지난 세션이 남아 있습니다</h2>
+          <p class="restore-counts">
+            워크스페이스 {restoreOffer.summary.workspaces}개, 탭 {restoreOffer.summary.tabs}개,
+            터미널 {restoreOffer.summary.panes}개
+          </p>
+          {#if savedAtLabel}
+            <p class="restore-when">마지막 저장 {savedAtLabel}</p>
+          {/if}
+          <p class="restore-note">
+            이름과 탭 구성, 분할 모양이 그대로 돌아옵니다. 터미널은 그때 있던 디렉터리에서 새로
+            열리며, 실행 중이던 프로그램과 화면에 찍혀 있던 내용까지 되살아나지는 않습니다.
+          </p>
+          <div class="restore-prefs">
+            <label>
+              Claude effort
+              <select bind:value={restoreOffer.effort}>
+                <option value={null}>설정 그대로</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+                <option value="max">max</option>
+              </select>
+            </label>
+            <label>
+              대화 재개 방식
+              <select bind:value={restoreOffer.mode}>
+                <option value="ask">직접 고르기</option>
+                <option value="full">전체 세션</option>
+                <option value="summary">요약</option>
+              </select>
+            </label>
+          </div>
+          <p class="restore-note">
+            두 선택은 되살아나는 Claude 창 전부에 똑같이 적용됩니다. 전체 세션은 대화마다 지난
+            내용을 통째로 다시 올리므로 사용량을 그만큼 씁니다.
+          </p>
+          <div class="restore-actions">
+            <button
+              class="restore-go"
+              disabled={restoreOffer.busy}
+              onclick={() => void restorePreviousSession()}
+            >
+              {restoreOffer.busy ? "복구하는 중..." : "한 번에 복구"}
+            </button>
+            <button class="restore-later" onclick={() => (restoreOffer.dismissed = true)}>
+              나중에
+            </button>
+          </div>
+          <p class="restore-hint">
+            나중에 눌러도 Ctrl+Shift+P (명령 팔레트)에서 다시 복구할 수 있습니다.
+          </p>
+        </div>
+      </div>
+    {/if}
+    <!-- Every workspace AND every tab stays mounted so its terminals keep
+         their xterm buffers and their agents keep running; only the active
+         one is displayed. Never unmount — `display: none` only. -->
     {#each snapshot?.workspaces ?? [] as ws (ws.id)}
-      <div class="workspace" class:hidden={ws.id !== snapshot?.active_workspace}>
-        <SplitNode
-          node={ws.layout}
-          workspace={ws.id}
-          activePane={ws.active_pane}
-          visible={ws.id === snapshot?.active_workspace}
-        />
+      {@const wsVisible = ws.id === snapshot?.active_workspace}
+      <div class="workspace" class:hidden={!wsVisible}>
+        <div class="tabbar">
+          {#each ws.tabs as tab, index (tab.id)}
+            {@const on = tab.id === ws.active_tab}
+            <div
+              class="tab"
+              class:on
+              data-status={tabStatus(tab) ?? "idle"}
+              role="tab"
+              tabindex="-1"
+              aria-selected={on}
+              draggable={renamingTab !== tab.id}
+              onclick={() => {
+                void focusTab(tab.id);
+                focusTerm(tab.active_pane);
+              }}
+              ondblclick={() => startRenameTab(tab.id, tab.name)}
+              onauxclick={(e) => {
+                if (e.button === 1) void closeTab(tab.id); // middle-click closes
+              }}
+              onkeydown={() => {}}
+              ondragstart={() => (draggedTab = tab.id)}
+              ondragover={(e) => e.preventDefault()}
+              ondrop={(e) => {
+                e.preventDefault();
+                if (draggedTab) void moveTab(draggedTab, index);
+                draggedTab = null;
+              }}
+            >
+              <span class="dot"></span>
+              {#if renamingTab === tab.id}
+                <input
+                  class="tab-rename"
+                  bind:value={renameValue}
+                  onblur={commitRenameTab}
+                  onclick={(e) => e.stopPropagation()}
+                  ondblclick={(e) => e.stopPropagation()}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter") commitRenameTab();
+                    if (e.key === "Escape") renamingTab = null;
+                    e.stopPropagation();
+                  }}
+                />
+              {:else}
+                <span class="tab-name">{tab.name}</span>
+                {#if tabHasBadge(tab)}<span class="tab-badge"></span>{/if}
+                <button
+                  class="tab-close"
+                  title="탭 닫기 (Ctrl+W)"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    void closeTab(tab.id);
+                  }}>×</button
+                >
+              {/if}
+            </div>
+          {/each}
+          {#if tabCreate.workspace === ws.id}
+            <input
+              class="tab-new-input"
+              bind:this={newTabInput}
+              placeholder="새 탭 이름 (Enter 생성 · Esc 취소)"
+              bind:value={newTabName}
+              onblur={cancelCreateTab}
+              onclick={(e) => e.stopPropagation()}
+              onkeydown={(e) => {
+                if (e.key === "Enter") commitCreateTab(ws.id);
+                else if (e.key === "Escape") cancelCreateTab();
+                e.stopPropagation();
+              }}
+            />
+          {:else}
+            <button class="tab-add" title="새 탭 (Ctrl+T)" onclick={() => startCreateTab(ws.id)}>
+              +
+            </button>
+          {/if}
+        </div>
+        <div class="tab-body">
+          {#each ws.tabs as tab (tab.id)}
+            <div class="tab-panel" class:hidden={tab.id !== ws.active_tab}>
+              <SplitNode
+                node={tab.layout}
+                workspace={ws.id}
+                tab={tab.id}
+                activePane={tab.active_pane}
+                visible={wsVisible && tab.id === ws.active_tab}
+              />
+            </div>
+          {/each}
+        </div>
       </div>
     {/each}
   </main>
@@ -135,8 +368,245 @@
   .workspace {
     position: absolute;
     inset: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
   .workspace.hidden {
+    display: none;
+  }
+
+  /* 지난 세션 복구 카드 — 워크스페이스가 하나도 없을 때만 빈 화면 가운데에 뜬다. */
+  .restore {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .restore-card {
+    width: min(520px, 100%);
+    padding: 22px 24px 18px;
+    background: var(--surface-3);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+  }
+  .restore-card h2 {
+    margin: 0 0 10px;
+    font-size: 1rem;
+    color: var(--text);
+  }
+  .restore-prefs {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    margin: 10px 0 2px;
+  }
+  .restore-prefs label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    opacity: 0.8;
+    text-align: left;
+  }
+  .restore-prefs select {
+    font: inherit;
+    padding: 3px 6px;
+  }
+  .restore-counts {
+    margin: 0 0 4px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  .restore-when,
+  .restore-hint {
+    margin: 0;
+    font-size: 0.74rem;
+    color: var(--muted);
+  }
+  .restore-note {
+    margin: 12px 0 16px;
+    font-size: 0.78rem;
+    line-height: 1.6;
+    color: var(--muted);
+  }
+  .restore-actions {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .restore-go,
+  .restore-later {
+    padding: 8px 16px;
+    font: inherit;
+    font-size: 0.82rem;
+    border-radius: 7px;
+    cursor: pointer;
+  }
+  .restore-go {
+    font-weight: 700;
+    color: var(--bg);
+    background: var(--accent);
+    border: 1px solid var(--accent);
+  }
+  .restore-go:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+  .restore-later {
+    color: var(--muted);
+    background: transparent;
+    border: 1px solid var(--border);
+  }
+  .restore-later:hover {
+    color: var(--text);
+    background: color-mix(in srgb, var(--text) 10%, transparent);
+  }
+
+  /* Tab bar — one row per workspace, above its terminals. A tab is the named
+     unit here; the split tree lives inside it. */
+  .tabbar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: stretch;
+    gap: 2px;
+    padding: 4px 6px 0;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+  /* Tabs share the bar's full width instead of hugging their text: `flex: 1 1 0`
+     gives every tab an equal slice of whatever is left over. `min-width` is the
+     floor — once enough tabs exist that they'd go below it, they stop shrinking
+     and the bar scrolls instead. */
+  .tab {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1 1 0;
+    min-width: 120px;
+    padding: 6px 10px 6px 12px;
+    font-size: 0.78rem;
+    color: var(--muted);
+    background: color-mix(in srgb, var(--text) 6%, transparent);
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 7px 7px 0 0;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  .tab:hover {
+    background: color-mix(in srgb, var(--text) 11%, transparent);
+  }
+  .tab.on {
+    color: var(--text);
+    background: var(--surface-3);
+    border-color: var(--border);
+    box-shadow: inset 0 2px 0 var(--accent);
+  }
+  /* The name takes the slack between the status dot and the close button, so a
+     wide tab reads centred rather than with the text stuck to the left edge. */
+  .tab-name {
+    flex: 1;
+    min-width: 0;
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* Status colour = the most attention-hungry pane inside the tab. */
+  .tab .dot {
+    width: 7px;
+    height: 7px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .tab[data-status="processing"] .dot {
+    background: var(--red);
+  }
+  .tab[data-status="processed"] .dot {
+    background: var(--green);
+  }
+  .tab[data-status="waiting"] .dot {
+    background: var(--yellow);
+  }
+  .tab[data-status="done"] .dot {
+    background: var(--done);
+  }
+  .tab-badge {
+    width: 6px;
+    height: 6px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--info);
+  }
+  .tab-close,
+  .tab-add {
+    flex-shrink: 0;
+    padding: 0 4px;
+    font-size: 0.95rem;
+    line-height: 1;
+    color: var(--muted);
+    background: none;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .tab-close:hover,
+  .tab-add:hover {
+    color: var(--text);
+    background: color-mix(in srgb, var(--text) 16%, transparent);
+  }
+  .tab-add {
+    align-self: center;
+    padding: 2px 8px;
+    font-size: 1rem;
+  }
+  .tab-rename {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    font: inherit;
+    text-align: center;
+    color: var(--text);
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--accent);
+    outline: none;
+  }
+  /* Sits where the "+" was, sized like a tab so the bar doesn't jump. */
+  .tab-new-input {
+    flex: 1 1 0;
+    min-width: 120px;
+    align-self: center;
+    padding: 6px 10px;
+    font: inherit;
+    font-size: 0.78rem;
+    color: var(--text);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border: 1px solid var(--accent);
+    border-radius: 7px 7px 0 0;
+    outline: none;
+  }
+  .tab-new-input::placeholder {
+    color: var(--muted);
+  }
+  .tab-body {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+  }
+  .tab-panel {
+    position: absolute;
+    inset: 0;
+  }
+  .tab-panel.hidden {
     display: none;
   }
 
@@ -279,15 +749,9 @@
       opacity: 0;
     }
   }
-  @media (prefers-reduced-motion: reduce) {
-    .dash-overlay,
-    .dash-modal {
-      animation: none;
-    }
-    .hud-scan {
-      display: none;
-    }
-  }
+  /* 시스템의 "애니메이션 사용" 설정(prefers-reduced-motion)에 반응하던 규칙을
+     일부러 제거했다 — amux는 그 설정과 무관하게 동작한다. 자세한 경위는
+     src/lib/Terminal.svelte의 .wave-lab 주석 참고. 되돌리지 말 것. */
 
   /* Broadcast banner — a loud, always-visible reminder while the powerful
      "type once, hit every agent" mode is armed. Click anywhere on it to disarm. */

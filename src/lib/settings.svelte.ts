@@ -10,6 +10,13 @@ interface Settings {
   theme: string;
   /** Height (px) of the sidebar notification panel; drag-resizable. */
   notifHeight: number;
+  /** Pin the last submitted command (up to 4 lines) inside each pane. */
+  showLastInput: boolean;
+  /** Draggable position (px from the pane's top-left) of the last-command chip. */
+  lastInputPos: { x: number; y: number };
+  /** Pin a prompt composer at the bottom of every pane (type without the
+   *  terminal auto-scrolling to the newest output). */
+  showComposer: boolean;
 }
 
 const DEFAULTS: Settings = {
@@ -17,6 +24,9 @@ const DEFAULTS: Settings = {
   sidebarWidth: 230,
   theme: "tokyo-night",
   notifHeight: 200,
+  showLastInput: true,
+  lastInputPos: { x: 8, y: 6 },
+  showComposer: true,
 };
 
 function load(): Settings {
@@ -60,5 +70,29 @@ export function setTheme(id: string) {
 export function setNotifHeight(px: number) {
   const max = Math.round(window.innerHeight * 0.7);
   settings.notifHeight = Math.min(max, Math.max(64, Math.round(px)));
+  save();
+}
+
+export function toggleShowLastInput() {
+  settings.showLastInput = !settings.showLastInput;
+  save();
+}
+
+export function setShowComposer(on: boolean) {
+  settings.showComposer = on;
+  save();
+}
+
+export function toggleShowComposer() {
+  setShowComposer(!(settings.showComposer ?? true));
+}
+
+/** Live position update while dragging the last-command chip (not persisted;
+ *  call saveSettings() once on drag end to avoid a localStorage write per move). */
+export function setLastInputPos(x: number, y: number) {
+  settings.lastInputPos = { x: Math.round(x), y: Math.round(y) };
+}
+
+export function saveSettings() {
   save();
 }

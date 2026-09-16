@@ -2,12 +2,33 @@
   // Command Palette (Ctrl+Shift+P): one fuzzy search over every action, pane,
   // workspace and theme. Keyboard-first (↑/↓/Enter/Esc), also fully clickable.
   import { tick } from "svelte";
-  import { closePane, createWorkspace, focusPane, focusWorkspace, splitPane } from "./ipc";
-  import { app, activePane, broadcast, palette, focusTerm } from "./state.svelte";
-  import { settings, setTheme } from "./settings.svelte";
+  import {
+    closePane,
+    closeTab,
+    focusPane,
+    focusTab,
+    focusWorkspace,
+    splitPane,
+  } from "./ipc";
+  import {
+    app,
+    activePane,
+    activeTab,
+    activeWorkspace,
+    broadcast,
+    canRestoreSession,
+    palette,
+    focusTerm,
+    paneLabel,
+    restoreOffer,
+    restorePreviousSession,
+    tabCreate,
+    wsCreate,
+  } from "./state.svelte";
+  import { settings, setTheme, toggleShowComposer } from "./settings.svelte";
   import { THEMES } from "./themes";
 
-  type Kind = "action" | "workspace" | "pane" | "theme";
+  type Kind = "action" | "workspace" | "tab" | "pane" | "theme";
   interface Item {
     kind: Kind;
     label: string;
@@ -23,7 +44,15 @@
   let listEl = $state<HTMLDivElement>();
 
   function kindLabel(k: Kind): string {
-    return k === "action" ? "동작" : k === "workspace" ? "WS" : k === "pane" ? "PANE" : "테마";
+    return k === "action"
+      ? "동작"
+      : k === "workspace"
+        ? "WS"
+        : k === "tab"
+          ? "탭"
+          : k === "pane"
+            ? "PANE"
+            : "테마";
   }
 
   function shortCwd(cwd: string | null): string {
@@ -49,14 +78,61 @@
       hint: broadcast.on ? "켜짐" : "꺼짐",
       run: () => (broadcast.on = !broadcast.on),
     });
+    out.push({
+      kind: "action",
+      label: "⌨ 하단 입력창 토글",
+      detail: "pane 아래 프롬프트 칸 — 타이핑해도 터미널이 맨 아래로 튀지 않음",
+      hint: (settings.showComposer ?? true) ? "켜짐" : "꺼짐",
+      run: toggleShowComposer,
+    });
+    const aws = activeWorkspace();
+    const at = activeTab();
+    if (aws) {
+      out.push({
+        kind: "action",
+        label: "새 탭",
+        detail: "Ctrl+T — 이름을 물어본 뒤 만듭니다",
+        run: () => (tabCreate.workspace = aws.id),
+      });
+    }
+    if (at) {
+      out.push({ kind: "action", label: "탭 닫기", detail: "Ctrl+W", run: () => void closeTab(at.id) });
+    }
     if (ap) {
       out.push({ kind: "action", label: "오른쪽으로 분할", run: () => void splitPane(ap, "horizontal") });
       out.push({ kind: "action", label: "아래로 분할", run: () => void splitPane(ap, "vertical") });
-      out.push({ kind: "action", label: "Pane 닫기", run: () => void closePane(ap) });
+      out.push({ kind: "action", label: "이 터미널 닫기", run: () => void closePane(ap) });
     }
-    out.push({ kind: "action", label: "새 워크스페이스", run: () => void createWorkspace() });
+    // The second way into a restore (the first is the card on the empty main
+    // area). Kept here so a user who dismissed the card, or who already opened
+    // a workspace by hand, can still bring the old arrangement back.
+    if (canRestoreSession() && restoreOffer.summary) {
+      const saved = restoreOffer.summary;
+      out.push({
+        kind: "action",
+        label: "↩ 지난 세션 복구",
+        detail: `워크스페이스 ${saved.workspaces}개, 탭 ${saved.tabs}개, 터미널 ${saved.panes}개를 한 번에 되살립니다`,
+        run: () => void restorePreviousSession(),
+      });
+    }
+    // Route through the sidebar prompt rather than creating one outright, so
+    // every entry point asks for the workspace and first-tab names alike.
+    out.push({
+      kind: "action",
+      label: "새 워크스페이스",
+      detail: "Ctrl+Shift+N — 이름과 첫 탭 이름을 물어본 뒤 만듭니다",
+      run: () => (wsCreate.open = true),
+    });
     for (const ws of snap?.workspaces ?? []) {
       out.push({ kind: "workspace", label: ws.name, detail: "워크스페이스 전환", run: () => void focusWorkspace(ws.id) });
+      for (const tab of ws.tabs) {
+        out.push({
+          kind: "tab",
+          label: tab.name,
+          detail: `${ws.name}  ·  탭 전환`,
+          run: () => void focusTab(tab.id),
+        });
+      }
     }
     for (const p of snap?.panes ?? []) {
       if (p.exited) continue;
@@ -64,7 +140,13 @@
       const detail = [p.meta.git_branch ? "⎇ " + p.meta.git_branch : null, shortCwd(p.meta.cwd), wsName]
         .filter(Boolean)
         .join("  ·  ");
-      out.push({ kind: "pane", label: p.name, detail, status: p.status, run: () => void focusPane(p.id) });
+      out.push({
+        kind: "pane",
+        label: paneLabel(p.id),
+        detail,
+        status: p.status,
+        run: () => void focusPane(p.id),
+      });
     }
     for (const t of THEMES) {
       out.push({
@@ -273,6 +355,9 @@
   .pal-kind.workspace {
     background: var(--info);
   }
+  .pal-kind.tab {
+    background: var(--done);
+  }
   .pal-kind.pane {
     background: var(--green);
   }
@@ -294,6 +379,9 @@
   }
   .pal-dot.waiting {
     background: var(--yellow);
+  }
+  .pal-dot.done {
+    background: var(--done);
   }
   .pal-label {
     flex-shrink: 0;

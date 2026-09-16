@@ -16,3 +16,9 @@ anyhow = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
 # Cross-platform local IPC (sync): Unix domain socket on Unix, named pipe on Windows.
 interprocess = "2"
+
+[dev-dependencies]
+# The hook-reporting test drives the real `amux` binary against a real engine,
+# so it needs both the engine and a runtime to host the socket server.
+amux-core = { workspace = true }
+tokio = { workspace = true }

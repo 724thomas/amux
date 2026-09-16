@@ -1,0 +1,275 @@
+//! A certificate authority of one, kept on this machine.
+//!
+//! The problem this solves is not "the phone shows a warning" — a single
+//! self-signed certificate would silence that too. It is that a certificate
+//! names an address, and this laptop's address moves with its DHCP lease. A
+//! certificate pinned to one IP has to be re-issued *and re-trusted on the
+//! phone* every time that happens, which is a chore nobody keeps up.
+//!
+//! Browsers trust the *issuer*, not the leaf. So the issuer is created once and
+//! installed on the phone once; after that a fresh leaf is minted for whatever
+//! address we hold at startup, and the phone accepts it without being touched
+//! again.
+//!
+//! The issuer is deliberately hobbled: a name constraint limits it to the
+//! company's 10.0.0.0/8 range, so a phone that trusts it has not handed this
+//! machine the power to vouch for anything else on the internet.
+
+use std::net::IpAddr;
+use std::path::{Path, PathBuf};
+
+use anyhow::Context;
+use rcgen::{
+    BasicConstraints, CertificateParams, CidrSubnet, DnType, GeneralSubtree, IsCa, Issuer,
+    KeyPair, KeyUsagePurpose, NameConstraints, SanType,
+};
+
+/// Leaf lifetime. Short is free here — a new one is issued on every start —
+/// and Apple rejects long-lived leaves outright.
+const LEAF_DAYS: i64 = 60;
+/// The issuer has to outlive many leaves, or the phone needs re-enrolling.
+const CA_YEARS: i64 = 10;
+
+/// Bumped whenever `ca_params()` changes in a way that matters for safety.
+///
+/// An issuer already on disk is reused as-is, and it has to be: the phone
+/// trusts that exact certificate, so quietly replacing it would break every
+/// paired device. But that also means a fix to `ca_params()` reaches only
+/// issuers created afterwards. Recording the schema an issuer was built with
+/// is what lets us notice, and say so, instead of letting an old one look
+/// current. Version 2 added the blanket DNS exclusion; a version 1 issuer can
+/// sign a certificate for any domain name.
+const CA_SCHEMA: u32 = 2;
+
+pub struct Ca {
+    pub cert_pem: String,
+    key_pem: String,
+}
+
+impl Ca {
+    /// Read the issuer from disk if it is already there, without creating one.
+    /// Used so a plain-HTTP run can still hand the certificate to a phone.
+    pub fn load_if_exists(dir: &Path) -> anyhow::Result<Option<Self>> {
+        let cert_path = dir.join("ca.crt");
+        let key_path = dir.join("ca.key");
+        if !cert_path.exists() || !key_path.exists() {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            cert_pem: std::fs::read_to_string(&cert_path)?,
+            key_pem: std::fs::read_to_string(&key_path)?,
+        }))
+    }
+
+    /// Read the issuer from disk, creating it the first time.
+    pub fn load_or_create(dir: &Path) -> anyhow::Result<Self> {
+        let cert_path = dir.join("ca.crt");
+        let key_path = dir.join("ca.key");
+
+        if cert_path.exists() && key_path.exists() {
+            warn_if_outdated(dir);
+            return Ok(Self {
+                cert_pem: std::fs::read_to_string(&cert_path)?,
+                key_pem: std::fs::read_to_string(&key_path)?,
+            });
+        }
+
+        let key = KeyPair::generate().context("generating the issuer key")?;
+        let mut params = ca_params();
+        params.not_before = time::OffsetDateTime::now_utc() - time::Duration::days(1);
+        params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(365 * CA_YEARS);
+
+        let cert = params.self_signed(&key).context("signing the issuer")?;
+        let cert_pem = cert.pem();
+        let key_pem = key.serialize_pem();
+
+        write_private(dir, &cert_path, cert_pem.as_bytes(), 0o644)?;
+        write_private(dir, &key_path, key_pem.as_bytes(), 0o600)?;
+        let _ = std::fs::write(dir.join("ca.schema"), CA_SCHEMA.to_string());
+        tracing::info!("발급자를 새로 만들었습니다: {}", cert_path.display());
+
+        Ok(Self { cert_pem, key_pem })
+    }
+
+    /// SHA-256 over the issuer's DER, formatted the way install screens show it.
+    ///
+    /// The issuer is handed to the phone over plaintext HTTP, which protects it
+    /// from being read but not from being swapped. A swapped issuer is worse
+    /// than a stolen token: the phone would trust someone else's authority for
+    /// ten years. Comparing this string against what the phone displays before
+    /// tapping install is what moves that step off the network and onto two
+    /// screens the user can see at once.
+    pub fn fingerprint(&self) -> String {
+        use base64::Engine as _;
+        use sha2::{Digest, Sha256};
+
+        let body: String = self
+            .cert_pem
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .collect();
+        let der = base64::engine::general_purpose::STANDARD
+            .decode(body.trim())
+            .unwrap_or_default();
+        Sha256::digest(&der)
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .chunks(8)
+            .map(|c| c.join(" "))
+            .collect::<Vec<_>>()
+            .join("\n                 ")
+    }
+
+    /// Mint a certificate for the address we are about to listen on.
+    pub fn issue_for(&self, ip: IpAddr) -> anyhow::Result<(String, String)> {
+        // The issuer is rebuilt from the same description used to create it,
+        // paired with the key read from disk. Nothing is parsed back out of the
+        // certificate: the name the leaf points at comes from this description,
+        // so as long as both sides call `ca_params()` the chain lines up.
+        let issuer_key = KeyPair::from_pem(&self.key_pem).context("reading the issuer key")?;
+        let issuer = Issuer::new(ca_params(), issuer_key);
+
+        let key = KeyPair::generate().context("generating the server key")?;
+        let mut params = CertificateParams::default();
+        // Spelled out rather than left to the library's default. Verifiers read
+        // the subject alternative name below and ignore the common name, but
+        // OpenSSL still treats a common name as a candidate host name when
+        // matching DNS constraints - putting the address here made the issuer's
+        // blanket DNS exclusion reject its own server certificates. The spaces
+        // are what keep this from parsing as a host name, so it must not be
+        // inherited from elsewhere: if it silently became host-shaped, every
+        // certificate this issuer signs would start failing.
+        params
+            .distinguished_name
+            .push(DnType::CommonName, "amux phone server");
+        params.subject_alt_names = vec![SanType::IpAddress(ip)];
+        params.use_authority_key_identifier_extension = true;
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        params.not_before = time::OffsetDateTime::now_utc() - time::Duration::days(1);
+        params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(LEAF_DAYS);
+
+        let cert = params
+            .signed_by(&key, &issuer)
+            .context("signing the server certificate")?;
+
+        // The phone is given the leaf and the issuer together, so a browser
+        // that has the issuer installed can build the chain without guessing.
+        Ok((
+            format!("{}{}", cert.pem(), self.cert_pem),
+            key.serialize_pem(),
+        ))
+    }
+}
+
+/// An issuer built before a safety fix keeps working and keeps being trusted,
+/// which is exactly why it must not pass unmentioned.
+fn warn_if_outdated(dir: &Path) {
+    let found: u32 = std::fs::read_to_string(dir.join("ca.schema"))
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(1);
+    if found >= CA_SCHEMA {
+        return;
+    }
+    println!(
+        "\n  ── 발급자가 오래된 형식입니다 (v{found}, 지금은 v{CA_SCHEMA}) ─────────────\n\
+         \x20 이 발급자는 IP 만 제한하고 도메인 이름은 제한하지 않습니다. 즉 이 발급자를\n\
+         \x20 신뢰하는 기기에 대해서는 임의의 도메인을 사칭하는 인증서를 만들 수 있습니다.\n\
+         \x20 코드는 고쳐졌지만 이미 만들어진 발급자 파일은 바뀌지 않습니다.\n\
+         \x20\n\
+         \x20 고치려면 발급자를 새로 만들고 폰에 다시 설치해야 합니다.\n\
+         \x20   1) rm {}/ca.crt {}/ca.key\n\
+         \x20   2) scripts/phone.sh --setup   (새 발급자를 만들어 폰에 넘깁니다)\n\
+         \x20   3) 폰에서 옛 발급자를 삭제한 뒤 새 것을 설치\n\
+         \x20   4) scripts/phone.sh          (주소가 그대로면 기기 등록은 그대로 살아 있습니다)\n",
+        dir.display(),
+        dir.display()
+    );
+}
+
+/// How the issuer describes itself. Used both when creating it and when
+/// signing with it later.
+fn ca_params() -> CertificateParams {
+    let mut params = CertificateParams::default();
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "amux phone (local issuer)");
+    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+    params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::CrlSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
+    // Vouching for the office range and nothing else: a phone that trusts this
+    // issuer has not given this laptop authority over the rest of the internet.
+    //
+    // Both halves are needed. A constraint binds only the *name form* it names,
+    // and a form left unmentioned stays unrestricted - so permitting IP ranges
+    // alone would still let this issuer sign `bank.example.com`, because that is
+    // a DNS name and no DNS rule was stated. The empty entries below exclude
+    // every name of those forms, which is what closes that door.
+    params.name_constraints = Some(NameConstraints {
+        permitted_subtrees: vec![
+            GeneralSubtree::IpAddress(CidrSubnet::V4([10, 0, 0, 0], [255, 0, 0, 0])),
+            // Loopback so the same issuer works when testing on the machine
+            // itself. A phone's own 127.0.0.1 is the phone; nothing is opened up.
+            GeneralSubtree::IpAddress(CidrSubnet::V4([127, 0, 0, 0], [255, 0, 0, 0])),
+        ],
+        excluded_subtrees: vec![
+            // An empty name matches every name of that form, so this excludes
+            // DNS names outright. Only DNS is excluded: an empty rfc822Name
+            // entry was tried and rejected every certificate this issuer signs,
+            // including its own server ones, so it buys nothing here.
+            GeneralSubtree::DnsName(String::new()),
+        ],
+    });
+    params
+}
+
+/// Would this issuer be willing to vouch for this address?
+///
+/// Signing happens whether or not the answer is yes - name constraints bind the
+/// verifier, not the signer - so an address outside the permitted set yields a
+/// certificate that every client rejects. On the machine running the server
+/// nothing looks wrong; the failure appears only on the phone. Answering the
+/// question before binding is what turns that into a startup error. IPv6 lands
+/// here too: the permitted set is IPv4 only, so an IPv6 bind is out of range.
+pub fn covers(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            o[0] == 10 || o[0] == 127
+        }
+        IpAddr::V6(_) => false,
+    }
+}
+
+pub fn default_ca_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("amux").join("ca")
+}
+
+fn write_private(dir: &Path, path: &Path, bytes: &[u8], mode: u32) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(path)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    std::fs::write(path, bytes)?;
+    Ok(())
+}

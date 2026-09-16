@@ -1,23 +1,27 @@
 <script lang="ts">
-  // Recursive renderer for the layout tree. Splits are addressed by `path`
-  // (false = first child, true = second), matching the engine's layout.rs.
+  // Recursive renderer for one tab's layout tree. Splits are addressed by
+  // `path` (false = first child, true = second), matching the engine's
+  // layout.rs — and the path only means anything relative to the tab that owns
+  // the tree, so `tab` travels with it.
   import SplitNode from "./SplitNode.svelte";
   import PaneView from "./PaneView.svelte";
-  import { setRatio, type LayoutNode, type PaneId, type WorkspaceId } from "./ipc";
+  import { setRatio, type LayoutNode, type PaneId, type TabId, type WorkspaceId } from "./ipc";
 
   let {
     node,
     workspace,
+    tab,
     activePane,
     visible = true,
     path = [],
   }: {
     node: LayoutNode;
     workspace: WorkspaceId;
+    tab: TabId;
     activePane: PaneId | null;
-    /// Whether this workspace is the one on screen. Hidden workspaces must
-    /// not mark their active pane as focused — switching back would then
-    /// never re-trigger keyboard focus (the prop never changes).
+    /// Whether this tab is the one on screen (in the workspace on screen).
+    /// Hidden tabs must not mark their active pane as focused — coming back
+    /// would then never re-trigger keyboard focus (the prop never changes).
     visible?: boolean;
     path?: boolean[];
   } = $props();
@@ -58,7 +62,7 @@
       rafPending = true;
       requestAnimationFrame(() => {
         rafPending = false;
-        void setRatio(workspace, path, dragRatio);
+        void setRatio(workspace, tab, path, dragRatio);
       });
     }
   }
@@ -66,7 +70,7 @@
   function endDrag() {
     if (!dragging) return;
     dragging = false;
-    void setRatio(workspace, path, dragRatio);
+    void setRatio(workspace, tab, path, dragRatio);
   }
 </script>
 
@@ -75,7 +79,7 @@
 {:else}
   <div class="split {node.axis}" bind:this={container}>
     <div class="cell" style="flex-grow: {ratio}">
-      <SplitNode node={node.first} {workspace} {activePane} {visible} path={[...path, false]} />
+      <SplitNode node={node.first} {workspace} {tab} {activePane} {visible} path={[...path, false]} />
     </div>
     <div
       class="divider {node.axis}"
@@ -85,10 +89,10 @@
       onpointermove={onDrag}
       onpointerup={endDrag}
       onpointercancel={endDrag}
-      ondblclick={() => void setRatio(workspace, path, 0.5)}
+      ondblclick={() => void setRatio(workspace, tab, path, 0.5)}
     ></div>
     <div class="cell" style="flex-grow: {1 - ratio}">
-      <SplitNode node={node.second} {workspace} {activePane} {visible} path={[...path, true]} />
+      <SplitNode node={node.second} {workspace} {tab} {activePane} {visible} path={[...path, true]} />
     </div>
   </div>
 {/if}

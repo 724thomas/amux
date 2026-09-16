@@ -1,8 +1,9 @@
 //! Pane metadata sweeper: cwd, git branch, listening ports.
 //!
 //! A single engine task polls every pane on a 2-second cadence and emits a
-//! state change only when a value actually differs. Everything is derived
-//! from /proc — no subprocesses are spawned.
+//! state change only when a value actually differs. Values are derived from
+//! the OS directly (procfs on Linux, libproc on macOS) — no subprocesses are
+//! spawned.
 
 mod cwd;
 mod git;

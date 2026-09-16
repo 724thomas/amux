@@ -22,6 +22,10 @@ notify-rust = "4.17.0"
 # Cross-platform local IPC: Unix domain socket on Unix, named pipe on Windows.
 interprocess = { version = "2", features = ["tokio"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+libproc = "0.14.11"
+
 # Windows: detect whether the pane's shell has a live child process (the
 # "a command is running" signal — no foreground process group under ConPTY).
 [target.'cfg(windows)'.dependencies]

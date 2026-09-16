@@ -1,0 +1,35 @@
+[package]
+name = "amux-phone"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Phone sidecar for amux: serves a small HTTP API over the running app's local socket"
+
+[[bin]]
+name = "amux-phone"
+path = "src/main.rs"
+
+[dependencies]
+amux-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+axum = "0.8"
+clap = { version = "4.5", features = ["derive"] }
+# Same local IPC the CLI uses: Unix domain socket on Unix, named pipe on Windows.
+interprocess = { version = "2", features = ["tokio"] }
+# Terminal QR for the one-time pairing code — no image backend needed.
+qrcode = { version = "0.14", default-features = false }
+# HTTPS. The certificate is issued here rather than shelling out to openssl:
+# the SAN and name-constraint fields are fiddly to express in an openssl config,
+# and this keeps working on Windows where amux also runs.
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rcgen = "0.14"
+time = "0.3"
+# 발급자 지문을 화면에 찍어 폰 설치 화면의 값과 눈으로 대조하게 하려고.
+sha2 = "0.10"
+base64 = "0.22"

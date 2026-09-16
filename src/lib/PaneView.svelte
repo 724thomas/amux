@@ -2,23 +2,31 @@
   // One terminal pane: click-to-focus, focus ring, hover toolbar,
   // pane actions in the terminal's context menu, drag-rearrange.
   import Terminal from "./Terminal.svelte";
-  import { closePane, focusPane, movePane, splitPane, type PaneId, type SplitAxis } from "./ipc";
-  import { app, paneInfo, rings, broadcast } from "./state.svelte";
+  import {
+    closePane,
+    focusPane,
+    movePane,
+    setPaneDone,
+    splitPane,
+    type PaneId,
+    type SplitAxis,
+  } from "./ipc";
+  import { activeTab, paneInfo, rings, broadcast } from "./state.svelte";
 
   let { pane, focused }: { pane: PaneId; focused: boolean } = $props();
 
   const ringing = $derived(rings.active[pane] === true);
   const pending = $derived(paneInfo(pane)?.notification != null);
-  // Broadcast: this pane is "armed" when broadcast mode is on and it lives in
-  // the active workspace (the only panes a broadcast actually reaches).
-  const broadcasting = $derived(
-    broadcast.on && paneInfo(pane)?.workspace === app.snapshot?.active_workspace,
-  );
+  // Broadcast: this pane is "armed" when broadcast mode is on and it sits in
+  // the tab on screen — a broadcast never reaches past the visible tab.
+  const broadcasting = $derived(broadcast.on && paneInfo(pane)?.tab === activeTab()?.id);
 
   // Done-Shockwave: when a pane finishes unseen (status → processed), fire a
   // one-shot radial burst to pull the eye to the agent that just shipped.
   // Bumping `burst` re-keys the effect element below, restarting the animation.
   const status = $derived(paneInfo(pane)?.status);
+  // `done` is a pinned status, so it doubles as the toggle's own on/off state.
+  const isDone = $derived(status === "done");
   let burst = $state(0);
   let prevStatus: string | undefined;
   $effect(() => {
@@ -35,7 +43,9 @@
   const extraActions = [
     { label: "오른쪽으로 분할", run: () => void splitPane(pane, "horizontal") },
     { label: "아래로 분할", run: () => void splitPane(pane, "vertical") },
-    { label: "Pane 닫기", run: () => void closePane(pane) },
+    // Closing the last pane in a tab closes the tab (and an empty workspace
+    // with it) — the cascade lives in the engine's close_pane.
+    { label: "이 터미널 닫기", run: () => void closePane(pane) },
   ];
 
   function zoneOf(e: DragEvent, el: HTMLElement): DropZone {
@@ -102,6 +112,19 @@
     {/if}
   {/key}
   <div class="toolbar">
+    <button
+      class="done-toggle"
+      class:on={isDone}
+      role="switch"
+      aria-checked={isDone}
+      title={isDone
+        ? "DONE 고정 해제 — 상태 자동 갱신 재개"
+        : "DONE으로 고정 — 작업 완료, 검토 중"}
+      onmousedown={(e) => e.preventDefault()}
+      onclick={() => void setPaneDone(pane, !isDone)}
+    >
+      ✓
+    </button>
     <button
       class="drag-handle"
       title="드래그해서 위치 이동"
@@ -286,11 +309,9 @@
       opacity: 0;
     }
   }
-  @media (prefers-reduced-motion: reduce) {
-    .fx {
-      display: none;
-    }
-  }
+  /* 시스템의 "애니메이션 사용" 설정(prefers-reduced-motion)에 반응하던 규칙을
+     일부러 제거했다 — amux는 그 설정과 무관하게 동작한다. 자세한 경위는
+     src/lib/Terminal.svelte의 .wave-lab 주석 참고. 되돌리지 말 것. */
   .pending-dot {
     position: absolute;
     top: 6px;
@@ -352,6 +373,15 @@
   }
   .toolbar .drag-handle {
     cursor: grab;
+  }
+  /* The only toolbar button with a latched state: filled while DONE is pinned,
+     so the toggle reads as on/off without opening the sidebar. */
+  .toolbar button.done-toggle.on {
+    background: var(--done);
+    color: var(--bg);
+  }
+  .toolbar button.done-toggle.on:hover {
+    background: color-mix(in srgb, var(--done) 78%, var(--bg));
   }
   .toolbar button.close:hover {
     background: var(--red);

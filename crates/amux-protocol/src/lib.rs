@@ -44,6 +44,7 @@ macro_rules! id_type {
 
 id_type!(PaneId, "p");
 id_type!(WorkspaceId, "w");
+id_type!(TabId, "t");
 
 // ---------------------------------------------------------------------------
 // Snapshot (engine state mirrored to the frontend / returned by the socket)
@@ -88,7 +89,7 @@ pub struct PaneNotification {
 }
 
 /// Pane work status, shown as a colored chip in the sidebar.
-/// Every pane is always in exactly one of these four states.
+/// Every pane is always in exactly one of these five states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PaneStatus {
@@ -101,6 +102,21 @@ pub enum PaneStatus {
     Idle,
     /// The app is waiting for user input — hook/bell signal (yellow).
     Waiting,
+    /// The user marked this pane done and under review (magenta). Unlike the
+    /// other four, this one is *pinned*: it is set only by an explicit
+    /// `pane.set_done` and no automatic writer (hooks, bell, silence
+    /// heuristic, focus) may overwrite it. Being in this state IS the pin —
+    /// there is no separate flag to keep in sync. Clearing it hands the pane
+    /// back to the automatic states.
+    Done,
+}
+
+impl PaneStatus {
+    /// Pinned states are owned by the user; every automatic status writer
+    /// must bail on them. See `Engine::set_pane_status`.
+    pub fn is_pinned(self) -> bool {
+        matches!(self, PaneStatus::Done)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -114,30 +130,53 @@ pub struct PaneMeta {
     pub kitty_keyboard: bool,
 }
 
+/// A pane carries no name of its own: the *tab* is the named unit the user
+/// sees and renames, and every pane inside it borrows that name (with an
+/// ordinal suffix when the tab is split into more than one pane).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaneInfo {
     pub id: PaneId,
     pub workspace: WorkspaceId,
-    pub name: String,
+    /// Which tab's split tree this pane is a leaf of. Broadcast, visibility
+    /// and labelling are all scoped by this.
+    pub tab: TabId,
     pub meta: PaneMeta,
     pub notification: Option<PaneNotification>,
     pub status: PaneStatus,
     pub exited: bool,
+    /// Id of the Claude Code conversation running here, as reported by the
+    /// hooks. `None` when no Claude session has announced itself — which is
+    /// also the case for every session that started before the hooks began
+    /// reporting it.
+    #[serde(default)]
+    pub claude_session: Option<String>,
+}
+
+/// One tab: a named screen holding its own split tree. Exactly one tab per
+/// workspace is on screen at a time; the rest stay alive and hidden.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TabInfo {
+    pub id: TabId,
+    pub name: String,
+    pub layout: LayoutNode,
+    pub active_pane: Option<PaneId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceInfo {
     pub id: WorkspaceId,
     pub name: String,
-    pub layout: LayoutNode,
-    pub active_pane: Option<PaneId>,
+    /// Tab-bar order.
+    pub tabs: Vec<TabInfo>,
+    pub active_tab: Option<TabId>,
 }
 
 /// One entry in the notification history (sidebar bottom panel).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotificationEntry {
     pub pane: PaneId,
-    pub pane_name: String,
+    /// Name of the tab the pane belongs to (panes have no name of their own).
+    pub tab_name: String,
     pub kind: NotifyKind,
     pub title: Option<String>,
     pub body: Option<String>,
@@ -275,15 +314,50 @@ pub mod methods {
     use crate::SplitAxis;
 
     #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Default)]
     pub struct WorkspaceCreateParams {
+        #[serde(default)]
         pub name: Option<String>,
+        /// Name for the workspace's first tab (defaults to `탭 1`).
+        #[serde(default)]
+        pub tab_name: Option<String>,
+        #[serde(default)]
         pub cwd: Option<String>,
     }
 
     #[derive(Debug, Serialize, Deserialize)]
     pub struct WorkspaceCreateResult {
         pub workspace: String,
+        pub tab: String,
         pub pane: String,
+    }
+
+    /// `tab` accepts a full UUID or a short prefix (`t-3fa2c1` / `3fa2c1`).
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct TabRefParams {
+        pub tab: String,
+    }
+
+    /// Open a tab. Every field is optional — `workspace` defaults to the active
+    /// one and `name` to `탭 N` — so `amux tab new` can be called bare.
+    #[derive(Debug, Default, Serialize, Deserialize)]
+    pub struct TabNewParams {
+        #[serde(default)]
+        pub workspace: Option<String>,
+        #[serde(default)]
+        pub name: Option<String>,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct TabNewResult {
+        pub tab: String,
+        pub pane: String,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct TabRenameParams {
+        pub tab: String,
+        pub name: String,
     }
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -325,6 +399,8 @@ pub mod methods {
         pub text: String,
     }
 
+    /// Kept for script compatibility: panes have no name, so this renames the
+    /// tab the pane lives in.
     #[derive(Debug, Serialize, Deserialize)]
     pub struct PaneRenameParams {
         pub pane: String,
@@ -343,6 +419,23 @@ pub mod methods {
         pub kind: crate::NotifyKind,
         pub title: Option<String>,
         pub body: Option<String>,
+    }
+
+    /// Pin/unpin the `done` (under review) status on a pane.
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct PaneSetDoneParams {
+        pub pane: String,
+        pub done: bool,
+    }
+
+    /// Tell amux which Claude conversation a pane is running. Sent by the
+    /// Claude Code hooks via `amux notify --from-claude-hook`; `session: None`
+    /// clears it.
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct PaneSetClaudeSessionParams {
+        pub pane: String,
+        #[serde(default)]
+        pub session: Option<String>,
     }
 }
 

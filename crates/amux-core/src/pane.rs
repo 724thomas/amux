@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use amux_protocol::{env_keys, PaneId, PaneMeta, PaneNotification, PaneStatus, WorkspaceId};
+use amux_protocol::{env_keys, PaneId, PaneMeta, PaneNotification, PaneStatus, TabId, WorkspaceId};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
@@ -31,7 +31,9 @@ const ECHO_WINDOW: std::time::Duration = std::time::Duration::from_millis(1500);
 pub struct Pane {
     pub id: PaneId,
     pub workspace: WorkspaceId,
-    pub name: Mutex<String>,
+    /// The tab this pane is a leaf of. Mutable because a pane can be moved
+    /// between tabs; the name the user sees lives on that tab, not here.
+    pub tab: Mutex<TabId>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
@@ -68,6 +70,13 @@ pub struct Pane {
     /// the final PostToolUse can be delivered just after Stop) and must not
     /// resurrect `processing`.
     pub last_done_at: Mutex<Option<std::time::Instant>>,
+    /// The Claude Code conversation running in this pane, reported by the
+    /// hooks (`amux notify --from-claude-hook`, which reads `session_id` off
+    /// the hook payload). Saved with the layout so a restore can hand the pane
+    /// back the same conversation instead of a bare shell. Deliberately NOT in
+    /// `PaneMeta`: the metadata sweeper rebuilds that struct wholesale from
+    /// /proc every second and would wipe it.
+    pub claude_session: Mutex<Option<String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -88,7 +97,7 @@ impl Pane {
     pub fn spawn(
         id: PaneId,
         workspace: WorkspaceId,
-        name: String,
+        tab: TabId,
         cols: u16,
         rows: u16,
         cwd: Option<std::path::PathBuf>,
@@ -143,7 +152,7 @@ impl Pane {
         let pane = Arc::new(Self {
             id,
             workspace,
-            name: Mutex::new(name),
+            tab: Mutex::new(tab),
             master: Mutex::new(pty.master),
             writer: Mutex::new(writer),
             killer: Mutex::new(killer),
@@ -161,6 +170,7 @@ impl Pane {
             hook_managed: std::sync::atomic::AtomicBool::new(false),
             turn_active: std::sync::atomic::AtomicBool::new(false),
             last_done_at: Mutex::new(None),
+            claude_session: Mutex::new(None),
         });
 
         // Reader thread: PTY → term state → tail buffer → sink.
@@ -281,10 +291,14 @@ impl Pane {
 
     /// PID of the foreground process group leader (what runs in the pane now).
     ///
-    /// Unix-only: `MasterPty::process_group_leader()` (tcgetpgrp under the hood)
-    /// is gated `#[cfg(unix)]` in portable-pty and simply does not exist on
-    /// Windows, so we report `None` there. The metadata sweeper then degrades
-    /// gracefully — cwd/git/ports come back empty — exactly as documented.
+    /// Unix-only: `process_group_leader` (tcgetpgrp on the PTY master) has no
+    /// Windows counterpart — ConPTY has no process groups — and portable-pty
+    /// only defines the method under `#[cfg(unix)]`. On Windows we return None,
+    /// which every caller already treats as "unknown": cwd/git meta fall back
+    /// to empty, and the silence heuristic to its shell-is-foreground path
+    /// (Windows status is driven by the Claude hooks instead — see
+    /// scripts/install-claude-hooks.py). Keeping the Unix arm byte-for-byte
+    /// identical means no behavior change on Linux/macOS.
     pub fn shell_pid(&self) -> Option<u32> {
         #[cfg(unix)]
         {
@@ -294,6 +308,13 @@ impl Pane {
         {
             None
         }
+    }
+
+    /// Has the pane's process written anything yet? Used as a readiness
+    /// signal after a restore: a shell that has printed its prompt is ready to
+    /// read a command, whereas one still running its rc files may swallow it.
+    pub fn has_output(&self) -> bool {
+        !self.tail.lock().is_empty()
     }
 
     /// Root PID of the shell process spawned at pane creation.
@@ -374,7 +395,7 @@ mod tests {
         let pane = Pane::spawn(
             PaneId::new(),
             WorkspaceId::new(),
-            "test".into(),
+            TabId::new(),
             80,
             24,
             None,
@@ -426,7 +447,7 @@ mod tests {
         let pane = Pane::spawn(
             PaneId::new(),
             WorkspaceId::new(),
-            "test".into(),
+            TabId::new(),
             80,
             24,
             None,
