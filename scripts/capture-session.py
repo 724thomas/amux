@@ -54,16 +54,25 @@ def socket_path() -> Path:
     return Path(f"/tmp/amux-{os.geteuid()}") / "amux.sock"
 
 
+def config_dir() -> Path:
+    """amux_protocol::config_dir() 과 같은 자리를 가리켜야 한다.
+
+    윈도우에서 일부러 $HOME 을 보지 않는다. 윈도우 자체에는 $HOME 이 없고 Git
+    Bash·MSYS 가 자기가 띄우는 셸에만 심어 주는 값이라, 그걸 따르면 이 스크립트는
+    C:\\Users\\<you>\\.config 에 쓰고 앱은 %APPDATA% 에서 읽어 — 방금 건져 낸 배치가
+    복구 목록에 뜨지 않는다.
+    """
+    if explicit := os.environ.get("XDG_CONFIG_HOME"):
+        return Path(explicit)
+    if WINDOWS:
+        return Path(os.environ.get("APPDATA") or ".")
+    return Path(os.environ.get("HOME") or Path.home()) / ".config"
+
+
 def session_path() -> Path:
     if explicit := os.environ.get("AMUX_SESSION_FILE"):
         return Path(explicit)
-    # 엔진의 session_path() 와 같은 순서: XDG_CONFIG_HOME → HOME → %APPDATA%.
-    base = os.environ.get("XDG_CONFIG_HOME") or os.environ.get("HOME")
-    if base is None:
-        base = os.environ.get("APPDATA") if WINDOWS else None
-    else:
-        base = Path(base) / ".config"
-    return Path(base or Path.home() / ".config") / "amux" / "session.json"
+    return config_dir() / "amux" / "session.json"
 
 
 def exchange(sock_path: Path, request: bytes) -> bytes:

@@ -289,20 +289,16 @@ pub fn covers(dir: &Path, ip: IpAddr) -> bool {
         && ((o[0] == 172 && (16..=31).contains(&o[1])) || (o[0] == 192 && o[1] == 168))
 }
 
-/// Where the issuer is kept. `XDG_CONFIG_HOME`/`HOME` on Unix; on Windows
-/// neither is normally set, so `%APPDATA%` is the per-user equivalent — the
-/// same order `amux_core::session` resolves. Falling through to `.` would put
-/// a private key in whatever directory the server happened to start in.
+/// Where the issuer is kept: the same per-user config directory the app uses
+/// for its session file, so every amux tool on the machine agrees on one spot.
+/// Resolving it anywhere else would put a private key in whatever directory
+/// the server happened to start in — see `amux_protocol::config_dir`.
 pub fn default_ca_dir() -> PathBuf {
     config_base().join("amux").join("ca")
 }
 
 pub(crate) fn config_base() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("."))
+    amux_protocol::config_dir()
 }
 
 fn write_private(dir: &Path, path: &Path, bytes: &[u8], mode: u32) -> anyhow::Result<()> {

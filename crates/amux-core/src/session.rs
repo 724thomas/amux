@@ -286,15 +286,7 @@ pub fn session_path() -> PathBuf {
     if let Some(explicit) = std::env::var_os(ENV_SESSION_FILE) {
         return PathBuf::from(explicit);
     }
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .or_else(|| {
-            // Windows has no $HOME; %APPDATA% is the equivalent per-user spot.
-            std::env::var_os("APPDATA").map(PathBuf::from)
-        })
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("amux").join("session.json")
+    amux_protocol::config_dir().join("amux").join("session.json")
 }
 
 /// Read the previous session, or `None` when there is nothing to restore.

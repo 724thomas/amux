@@ -250,6 +250,40 @@ pub mod rpc_codes {
     pub const PANE_EXITED: i64 = -32001;
 }
 
+/// Per-user configuration directory, the one every amux tool has to agree on:
+/// the app writes `amux/session.json` here, the phone sidecar keeps its
+/// certificate authority in `amux/ca/`, and `scripts/capture-session.py` reads
+/// the session back. Two tools disagreeing means a session that never restores
+/// or a phone that has to be paired again.
+///
+/// `XDG_CONFIG_HOME` wins everywhere — it is set on purpose, by someone who
+/// means it. After that the platforms part ways, and Windows deliberately does
+/// *not* consult `$HOME`: Windows has no `$HOME` of its own, but Git Bash and
+/// MSYS invent one for the shells they launch. Honouring it would put the
+/// config under `C:\Users\<you>\.config` for anything started from such a
+/// shell and under `%APPDATA%` for the app started from its shortcut — one
+/// machine, two config directories, decided by which terminal you happened to
+/// open.
+pub fn config_dir() -> std::path::PathBuf {
+    use std::path::PathBuf;
+
+    if let Some(explicit) = std::env::var_os("XDG_CONFIG_HOME") {
+        return PathBuf::from(explicit);
+    }
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join(".config"))
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+}
+
 /// Canonical local-socket name both the app (server) and the `amux` CLI
 /// (client) feed to the `interprocess` crate, which maps it to the right
 /// OS primitive:

@@ -35,13 +35,11 @@ function Die($msg) {
 $Port = if ($env:AMUX_PHONE_PORT) { $env:AMUX_PHONE_PORT } else { '8000' }
 $Root = Split-Path -Parent $PSScriptRoot
 
-# amux-phone 이 설정을 찾는 순서와 같아야 합니다 (tls.rs 의 config_base):
-# XDG_CONFIG_HOME → HOME\.config → %APPDATA%. 여기서 다른 곳을 보면 "발급자가
-# 없다"고 잘못 막게 됩니다.
-$ConfigBase =
-  if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME }
-  elseif ($env:HOME) { Join-Path $env:HOME '.config' }
-  else { $env:APPDATA }
+# amux-phone 이 설정을 찾는 자리와 같아야 합니다 (amux_protocol::config_dir).
+# 윈도우에서는 $HOME 을 보지 않습니다 — Git Bash 가 심어 주는 값이라 그걸 따르면
+# 셸에 따라 발급자 위치가 갈립니다. 여기서 다른 곳을 보면 "발급자가 없다"고
+# 잘못 막게 됩니다.
+$ConfigBase = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { $env:APPDATA }
 $CaCert = Join-Path $ConfigBase 'amux\ca\ca.crt'
 
 # 주소 기록은 설정이 아니라 캐시입니다 — 로밍 프로필에 얹을 이유가 없습니다.
