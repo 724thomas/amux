@@ -595,35 +595,36 @@
     xtermTextarea?.addEventListener("compositionstart", imeOn);
     xtermTextarea?.addEventListener("compositionend", imeOff);
 
-    // ── xterm 한글 조합 버그 우회 ──────────────────────────────────────────
-    // xterm의 숨은 textarea는 **포커스가 빠질 때만** 비워진다. 그래서 한 번
-    // 포커스를 잡은 뒤로 친 글자가 거기 계속 쌓인다. 문제는 조합 처리 코드가
-    // 그 누적된 값을 통째로 보내 버리는 분기를 갖고 있다는 점이다.
+    // ── 한글 조합: xterm의 숨은 textarea를 건드리지 않는다 ────────────────
+    // 여기에는 "조합이 시작되는 순간 textarea를 비운다"는 우회가 있었다. 그것이
+    // 빠르게 친 한글을 한 글자씩 **삼키고** 있었으므로 걷어낸다. 왜 그런지는
+    // xterm이 조합을 끝내고 글자를 보내는 코드를 보면 바로 드러난다.
     //
-    //   // CompositionHelper._handleAnyTextareaChanges()
-    //   const diff = newValue.replace(oldValue, '');        // 접두사 제거가 아니라 "문자열 찾아 바꾸기"
-    //   if (newValue.length > oldValue.length)      triggerDataEvent(diff);
-    //   else if (newValue.length < oldValue.length) triggerDataEvent(DEL);
-    //   else if (newValue !== oldValue)             triggerDataEvent(newValue);  // ← 누적분 전체를 보낸다
+    //   // CompositionHelper._finalizeComposition(true) — compositionend 직후 0ms 뒤
+    //   input = this._isComposing
+    //     ? value.substring(currentStart, this._compositionPosition.start)  // ← 다음 조합이 이미 시작됨
+    //     : value.substring(currentStart);
     //
-    // 한글은 한 글자를 **제자리에서 바꿔 가며** 완성한다("하"→"한"). 길이는 그대로인데
-    // 내용만 바뀌므로 위 세 번째 분기에 정확히 걸린다. 그 순간 textarea에 쌓여 있던
-    // "지금까지 친 것 전부"가 한 덩어리로 PTY에 다시 들어간다 — 사용자가 겪은
-    // "작성한 게 자동으로 다시 붙여넣어지는" 증상이다. 두 번째 분기도 위험하다:
-    // `replace`는 접두사 제거가 아니라서 옛 값이 새 값 안에 없으면(제자리 수정이면
-    // 대개 없다) diff가 새 값 전체가 된다.
+    // 글자를 보내는 일은 compositionend 그 자리가 아니라 **0ms 뒤**에 일어난다.
+    // 빠르게 치면 그 사이에 다음 글자의 compositionstart가 먼저 도착하고, 그러면
+    // xterm은 위의 첫 번째 가지를 타 "이번 조합이 시작된 위치"까지를 잘라 보낸다.
+    // 그런데 우리가 방금 textarea를 비워 버렸으므로 그 위치는 0이고, 잘라낸 결과는
+    // `substring(0, 0)` — 빈 문자열이다. **직전 글자가 통째로 사라진다.**
     //
-    // 영문에는 제자리 수정이 없어서 안 터지고, 하단 입력창은 xterm을 아예 거치지
-    // 않아서(완성된 문장을 한 번에 PTY로 보냄) 멀쩡했다 — 관찰된 비대칭 그대로다.
+    // 조합 화면에는 이미 보였다가 다음 글자를 치는 순간 없어지므로, 쓰는 사람에게는
+    // "방금 친 글자가 지워진다"로 보인다. 한 글자마다 띄어쓰기를 하면 멀쩡한 것도
+    // 같은 이유다 — 공백이 조합 사이를 벌려 0ms 타이머가 먼저 돌 틈을 준다.
     //
-    // 우회: **조합이 시작되는 순간 textarea를 비운다.** 캡처 단계로 달았기 때문에
-    // xterm 자신의 compositionstart 처리보다 먼저 돌고, xterm은 비워진 값을 기준으로
-    // 조합 시작 위치를 0으로 잡는다. 그러면 textarea에는 항상 "지금 조합 중인 글자"
-    // 하나뿐이라, 위 분기가 터지더라도 흘러나올 수 있는 최대치가 그 한 글자로 묶인다.
-    const resetImeBuffer = () => {
-      if (xtermTextarea) xtermTextarea.value = "";
-    };
-    host.addEventListener("compositionstart", resetImeBuffer, true);
+    // 우회가 막으려던 것은 `_handleAnyTextareaChanges()`가 누적분을 통째로 재전송하는
+    // 분기였는데, 여기 설치된 xterm 6.0.0에는 그 타이머에 `if (!this._isComposing)`
+    // 가드가 있어 조합 중에는 애초에 돌지 않는다(package.json은 스캐폴드 이후 줄곧
+    // ^6.0.0, bun.lock도 6.0.0 고정 — 우회를 넣던 시점에도 이 가드는 있었다).
+    // 누적 자체도 해롭지 않다: 조합이 시작될 때의 길이를 기준점으로 잡아 그 뒤만
+    // 잘라 보내고, 포커스가 빠지면 xterm이 스스로 비운다.
+    //
+    // 되풀이 방지: 같은 증상이 다시 나오면 추측하지 말고 `scripts/input-probe.py`로
+    // PTY에 실제로 도착한 바이트를 먼저 받을 것. 경위는
+    // docs/known-issues/duplicate-input.md 11장.
     try {
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => webgl.dispose()); // falls back to DOM renderer
@@ -856,7 +857,6 @@
       observer.disconnect();
       cancelAnimationFrame(waveRaf);
       host.removeEventListener("keydown", stampKey, true);
-      host.removeEventListener("compositionstart", resetImeBuffer, true);
       xtermTextarea?.removeEventListener("compositionstart", imeOn);
       xtermTextarea?.removeEventListener("compositionend", imeOff);
       channel.onmessage = () => {};
