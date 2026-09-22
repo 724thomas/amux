@@ -7,8 +7,6 @@
   // bottom panel is the "지금 봐야 할 에이전트" triage list.
   import { openUrl } from "@tauri-apps/plugin-opener";
   import {
-    closeTab,
-    closeWorkspace,
     createWorkspace,
     focusPane,
     focusTab,
@@ -25,6 +23,8 @@
     app,
     attentionItems,
     clock,
+    confirmCloseTab,
+    confirmCloseWorkspace,
     focusTerm,
     paneInfo,
     tabHasBadge,
@@ -159,8 +159,15 @@
 
   function closeTarget(target: MenuTarget) {
     menu = null;
-    if (target.kind === "workspace") void closeWorkspace(target.id);
-    else void closeTab(target.id);
+    // Same question as Ctrl+W / Ctrl+Shift+W before anything is killed.
+    const workspaces = app.snapshot?.workspaces ?? [];
+    if (target.kind === "workspace") {
+      const ws = workspaces.find((w) => w.id === target.id);
+      if (ws) void confirmCloseWorkspace(ws);
+    } else {
+      const tab = workspaces.flatMap((w) => w.tabs).find((t) => t.id === target.id);
+      if (tab) void confirmCloseTab(tab);
+    }
   }
 
   // Live mm:ss since the status began, for the attention rows.

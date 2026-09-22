@@ -21,7 +21,18 @@ alacritty_terminal = "0.26.0"
 notify-rust = "4.17.0"
 # Cross-platform local IPC: Unix domain socket on Unix, named pipe on Windows.
 interprocess = { version = "2", features = ["tokio"] }
+# Claude subscription usage poll (see `usage`): a small blocking HTTP client,
+# with the OS trust store so a corporate root CA installed on the machine works.
+ureq = { version = "3.4", features = ["platform-verifier"], optional = true }
+time = { version = "0.3", features = ["parsing"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
 libproc = "0.14.11"
+
+[features]
+# The Claude usage poller (`usage`), turned on by the app. Off by default so
+# this crate still cross-checks for Windows from Linux
+# (`cargo check --target x86_64-pc-windows-gnu -p amux-core`): the TLS stack
+# under ureq builds C code (ring) that needs a MinGW compiler for that target.
+usage = ["dep:ureq", "dep:time"]

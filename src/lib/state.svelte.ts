@@ -3,6 +3,8 @@
 import { tick } from "svelte";
 import { listen } from "@tauri-apps/api/event";
 import {
+  closeTab,
+  closeWorkspace,
   getSnapshot,
   restoreSession,
   type ResumeMode,
@@ -53,6 +55,11 @@ export function registerTermFocus(pane: PaneId, focus: () => void): () => void {
 
 /** Focus a pane's terminal (no-op while it isn't mounted/visible). */
 export function focusTerm(pane: PaneId | null | undefined) {
+  // A dialog that owns the keyboard keeps it. Every active-pane change lands
+  // here (snapshot listener, palette, sidebar), and one happening behind the
+  // close confirmation or the conversation search must not pull the keyboard
+  // out from under it. Both hand it back themselves when they close.
+  if (closeConfirm.open || historySearch.open) return;
   if (pane) termFocus.get(pane)?.();
 }
 
@@ -250,6 +257,10 @@ export const broadcast = $state<{ on: boolean }>({ on: false });
 // Command Palette (Ctrl+Shift+P) open/closed. Transient.
 export const palette = $state<{ open: boolean }>({ open: false });
 
+// 지난 대화 검색 (Ctrl+Shift+H): search past Claude conversations and read one
+// in a read-only viewer. Transient.
+export const historySearch = $state<{ open: boolean }>({ open: false });
+
 // New-workspace title prompt: creating a workspace (via the sidebar "+" button
 // or Ctrl+Shift+N) always opens an inline title input first — no workspace is
 // created until the user confirms. Shared so both entry points drive the one
@@ -262,6 +273,78 @@ export const wsCreate = $state<{ open: boolean }>({ open: false });
 // created until the user confirms; a blank name falls back to the engine's
 // auto-name (`탭 N`). Transient.
 export const tabCreate = $state<{ workspace: WorkspaceId | null }>({ workspace: null });
+
+// --- Close confirmation ------------------------------------------------------
+// Closing a tab, a workspace or the window kills every terminal inside it, and
+// whatever agent was running there. A restore brings the arrangement and the
+// Claude conversations back, but a turn that was mid-flight is simply gone, and
+// Ctrl+W is also the shell's "delete a word" — easy to hit out of habit. So
+// every way of closing a tab or a workspace (shortcut, the tab's ×,
+// middle-click, sidebar menu, palette) and the window's own close ask first, in
+// this one dialog. Closing a single pane from its toolbar does not ask.
+// "확인" is the default: Enter confirms, Esc cancels. Transient.
+export const closeConfirm = $state<{ open: boolean; title: string; detail: string }>({
+  open: false,
+  title: "",
+  detail: "",
+});
+let settleCloseConfirm: ((ok: boolean) => void) | null = null;
+
+/** Show the dialog and wait for the answer. A request that arrives while the
+ *  dialog is already up (Ctrl+W held down, the window's × clicked twice) is
+ *  answered "no" instead of stacking a second dialog. */
+function askClose(title: string, detail: string): Promise<boolean> {
+  if (closeConfirm.open) return Promise.resolve(false);
+  closeConfirm.title = title;
+  closeConfirm.detail = detail;
+  closeConfirm.open = true;
+  return new Promise((resolve) => (settleCloseConfirm = resolve));
+}
+
+/** Where the dialog's buttons (and Enter / Esc) land. */
+export function answerClose(ok: boolean) {
+  closeConfirm.open = false;
+  const settle = settleCloseConfirm;
+  settleCloseConfirm = null;
+  settle?.(ok);
+}
+
+/** "터미널 N개가 …", plus how many of them have an agent busy or waiting. */
+function closeDetail(panes: PaneId[]): string {
+  const ids = new Set(panes);
+  const live = (app.snapshot?.panes ?? []).filter((p) => ids.has(p.id) && !p.exited);
+  const busy = live.filter((p) => p.status === "processing" || p.status === "waiting").length;
+  const base = `터미널 ${live.length}개가 모두 종료됩니다.`;
+  return busy > 0
+    ? `${base} 그중 ${busy}개는 에이전트가 작업 중이거나 입력을 기다리고 있습니다.`
+    : base;
+}
+
+export async function confirmCloseTab(tab: TabInfo) {
+  if (await askClose(`'${tab.name}' 탭을 닫을까요?`, closeDetail(tabPanes(tab)))) {
+    await closeTab(tab.id);
+  }
+}
+
+export async function confirmCloseWorkspace(ws: WorkspaceInfo) {
+  const panes = ws.tabs.flatMap((t) => tabPanes(t));
+  const detail = `탭 ${ws.tabs.length}개, ${closeDetail(panes)}`;
+  if (await askClose(`'${ws.name}' 워크스페이스를 닫을까요?`, detail)) {
+    await closeWorkspace(ws.id);
+  }
+}
+
+/** The window's own close (its × button, Alt+F4). Asks only when there is a
+ *  terminal to lose; an empty amux just closes. */
+export async function confirmQuit(): Promise<boolean> {
+  const snap = app.snapshot;
+  const live = (snap?.panes ?? []).filter((p) => !p.exited);
+  if (!snap || live.length === 0) return true;
+  const detail =
+    `워크스페이스 ${snap.workspaces.length}개의 ${closeDetail(live.map((p) => p.id))} ` +
+    "배치는 저장되어 다음 실행 때 복구할 수 있습니다.";
+  return askClose("amux 를 종료할까요?", detail);
+}
 
 // --- Dashboard (Mission Control) -------------------------------------------
 // A JARVIS-style full-screen overlay (Ctrl+Shift+A) showing every live agent

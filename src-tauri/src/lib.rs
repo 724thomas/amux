@@ -25,10 +25,13 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(Arc::clone(&engine))
         .manage(previous)
+        .manage(commands::History::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_snapshot,
             commands::saved_session,
             commands::restore_session,
+            commands::search_history,
+            commands::history_conversation,
             commands::create_workspace,
             commands::close_workspace,
             commands::focus_workspace,
@@ -58,6 +61,11 @@ pub fn run() {
             // The saver holds its fire until it has seen a non-empty state, so
             // the empty launch below cannot erase what it is meant to protect.
             engine.start_session_autosave();
+            // Ask Anthropic for the Claude subscription usage every five minutes
+            // and share it with every Claude status line through one file, so
+            // all sessions show the same current numbers instead of whatever
+            // each one saw on its own last reply.
+            amux_core::usage::start_poller();
             // Launch with zero workspaces — the user opens the first one via
             // "+ 새 워크스페이스" (which prompts for a title), or restores the
             // previous session in one click from the card the frontend shows

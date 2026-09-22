@@ -14,8 +14,12 @@
 //! - `notify`     — notification policy + desktop dispatch (M4)
 //! - `server`     — NDJSON JSON-RPC Unix-socket server (M3)
 //! - `session`    — save/restore of the workspace+tab+split shape (M5)
+//! - `history`    — searchable index of past Claude Code conversations
+//! - `usage`      — Claude subscription usage, polled and shared with status lines
+//!   (behind the `usage` feature, which the app turns on)
 
 pub mod engine;
+pub mod history;
 pub mod layout;
 pub mod meta;
 pub mod notify;
@@ -24,5 +28,7 @@ pub mod pane;
 pub mod server;
 pub mod session;
 pub mod term_state;
+#[cfg(feature = "usage")]
+pub mod usage;
 
 pub use engine::{Engine, EngineError, EngineEvent};

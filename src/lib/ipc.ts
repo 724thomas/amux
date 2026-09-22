@@ -126,6 +126,48 @@ export interface ResumePrefs {
 export const restoreSession = (prefs: ResumePrefs, cols = 80, rows = 24) =>
   invoke<number>("restore_session", { cols, rows, prefs });
 
+// -- past conversations ---------------------------------------------------------
+
+/// A Claude conversation that matched "지난 대화 검색" (or, for an empty query,
+/// one of the most recent). Read from the transcripts Claude Code keeps under
+/// `~/.claude/projects`; only what was typed and answered is indexed.
+export interface HistoryHit {
+  session: string;
+  title: string | null;
+  cwd: string | null;
+  branch: string | null;
+  /** ISO-8601 UTC of the conversation's last message. */
+  last_ts: string | null;
+  /** How many messages contain every search term. */
+  matches: number;
+  /** Index into the conversation's messages of the first match. */
+  first_match: number | null;
+  /** The first match with a little context, on one line. */
+  snippet: string | null;
+}
+
+export interface HistoryMessage {
+  role: "user" | "assistant";
+  ts: string | null;
+  text: string;
+}
+
+export interface HistoryConversation {
+  session: string;
+  title: string | null;
+  cwd: string | null;
+  branch: string | null;
+  messages: HistoryMessage[];
+}
+
+/// Case-insensitive; every whitespace-separated term must appear in one
+/// message. An empty query lists the most recent conversations.
+export const searchHistory = (query: string, limit = 50) =>
+  invoke<HistoryHit[]>("search_history", { query, limit });
+
+export const historyConversation = (session: string) =>
+  invoke<HistoryConversation | null>("history_conversation", { session });
+
 // -- workspaces ---------------------------------------------------------------
 
 /** `tabName` names the workspace's first tab; blank falls back to `탭 1`. */

@@ -1,9 +1,12 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import Sidebar from "./lib/Sidebar.svelte";
   import SplitNode from "./lib/SplitNode.svelte";
   import Palette from "./lib/Palette.svelte";
   import Dashboard from "./lib/Dashboard.svelte";
+  import CloseConfirm from "./lib/CloseConfirm.svelte";
+  import HistorySearch from "./lib/HistorySearch.svelte";
   import {
     app,
     initState,
@@ -12,7 +15,11 @@
     dashboard,
     activeTabPaneCount,
     canRestoreSession,
+    closeConfirm,
+    confirmCloseTab,
+    confirmQuit,
     focusTerm,
+    historySearch,
     restoreOffer,
     restorePreviousSession,
     tabCreate,
@@ -20,7 +27,6 @@
     tabStatus,
   } from "./lib/state.svelte";
   import {
-    closeTab,
     focusTab,
     moveTab,
     newTab,
@@ -103,6 +109,16 @@
 
   onMount(() => {
     void initState();
+    // Closing the window (its ×, Alt+F4) kills every terminal, so it asks
+    // first, same as Ctrl+W. While this listener exists Tauri holds the close
+    // and leaves the decision here; `destroy()` is how a confirmed one goes
+    // through (and still fires the engine's shutdown on the way out).
+    const win = getCurrentWindow();
+    const unlisten = win.onCloseRequested(async (event) => {
+      event.preventDefault();
+      if (await confirmQuit()) await win.destroy();
+    });
+    return () => void unlisten.then((off) => off());
   });
 
   // Theme: app chrome colors live as CSS variables on :root.
@@ -135,6 +151,14 @@
 
 {#if palette.open}
   <Palette />
+{/if}
+
+{#if historySearch.open}
+  <HistorySearch />
+{/if}
+
+{#if closeConfirm.open}
+  <CloseConfirm />
 {/if}
 
 {#if dashboard.open}
@@ -261,7 +285,7 @@
               }}
               ondblclick={() => startRenameTab(tab.id, tab.name)}
               onauxclick={(e) => {
-                if (e.button === 1) void closeTab(tab.id); // middle-click closes
+                if (e.button === 1) void confirmCloseTab(tab); // middle-click closes (after asking)
               }}
               onkeydown={() => {}}
               ondragstart={() => (draggedTab = tab.id)}
@@ -294,7 +318,7 @@
                   title="탭 닫기 (Ctrl+W)"
                   onclick={(e) => {
                     e.stopPropagation();
-                    void closeTab(tab.id);
+                    void confirmCloseTab(tab);
                   }}>×</button
                 >
               {/if}

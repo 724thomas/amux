@@ -2,8 +2,6 @@
 // Used by both a window-level keydown listener and xterm's
 // attachCustomKeyEventHandler, so shortcuts win over the terminal.
 import {
-  closeTab,
-  closeWorkspace,
   focusPane,
   focusTab,
   focusWorkspace,
@@ -17,6 +15,9 @@ import {
   activeWorkspace,
   app,
   broadcast,
+  confirmCloseTab,
+  confirmCloseWorkspace,
+  historySearch,
   palette,
   dashboard,
   tabCreate,
@@ -159,9 +160,10 @@ function dispatch(e: KeyboardEvent): boolean {
         wsCreate.open = true;
         return true;
       case "KeyW": {
-        // Closes the whole workspace — every tab in it, every pane in those.
+        // Closes the whole workspace — every tab in it, every pane in those —
+        // so it asks first (Enter confirms).
         const ws = activeWorkspace();
-        if (ws) void closeWorkspace(ws.id).catch(() => {});
+        if (ws) void confirmCloseWorkspace(ws).catch(() => {});
         return true;
       }
       case "KeyD": {
@@ -179,6 +181,10 @@ function dispatch(e: KeyboardEvent): boolean {
         return true;
       case "KeyP":
         palette.open = true;
+        return true;
+      case "KeyH":
+        // 지난 대화 검색: find a past Claude conversation and read it.
+        historySearch.open = true;
         return true;
       case "KeyE":
         // Hop between the pane's bottom composer and its terminal (turning the
@@ -221,8 +227,10 @@ function dispatch(e: KeyboardEvent): boolean {
       return true;
     }
     if (e.code === "KeyW") {
+      // Asks first: the shell habit of Ctrl+W (delete a word) must not be able
+      // to kill the agents in this tab on its own. Enter confirms.
       const tab = activeTab();
-      if (tab) void closeTab(tab.id).catch(() => {});
+      if (tab) void confirmCloseTab(tab).catch(() => {});
       return true;
     }
     if (e.key === "PageUp") {

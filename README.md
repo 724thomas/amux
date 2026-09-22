@@ -22,6 +22,56 @@ AI 코딩 에이전트(Claude Code 등)를 **병렬로** 돌리기 위한 데스
 ## 변경 내역
 
 ### 미출시 (main)
+- **탭, 워크스페이스, 창을 닫기 전에 한 번 묻는다.** 지금까지는 `Ctrl+W`(셸에서는 "단어
+  하나 지우기" 로 손에 익은 키), `Ctrl+Shift+W`, 탭의 `×`, 휠 클릭, 사이드바 우클릭 메뉴,
+  명령 팔레트의 "탭 닫기", 그리고 창 자체의 `×`(Alt+F4 포함)가 확인 없이 바로 실행되어, 그
+  안에서 돌던 Claude 까지 즉시 종료됐다. 세션 복구가 배치와 대화는 되살려 주지만 돌던 턴은
+  끊긴다. 이제 이 경로들은 모두 확인 창을 먼저 띄운다. 창에는 종료될 터미널 수와, 그중
+  작업 중이거나 입력을 기다리는 에이전트 수가 적힌다. 기본 버튼이 **확인** 이라 `Enter`
+  한 번이면 닫히고, `Esc` 나 바깥 클릭은 취소다. 워크스페이스가 하나도 없을 때 창을 닫으면
+  묻지 않고, pane 하나를 닫는 툴바 버튼과 "이 터미널 닫기" 도 예전처럼 바로 닫는다.
+  - 확인 창이 떠 있는 동안에는 어떤 키도 터미널로 가지 않는다. 확인에 쓴 `Enter` 가 뒤의
+    Claude 입력창으로 새어 프롬프트를 제출하는 일을 막으려고, 확인 창이 window 단계에서
+    키를 가장 먼저 가로챈다.
+  - 창 닫기는 프론트엔드의 `onCloseRequested` 가 받는다. Tauri 는 이 리스너가 있으면 닫기를
+    멈추고 결정을 넘기므로, 확인하면 `destroy()` 로 닫히고 엔진 종료(`Engine::shutdown`)는
+    예전처럼 돈다. 이를 위해 권한 `core:window:allow-destroy` 를 추가했다. 화면(JS)이 완전히
+    멈춘 상태에서는 창의 `×` 가 동작하지 않는다.
+- **🕘 지난 대화 검색 (Ctrl+Shift+H)** : Claude Code 가 `~/.claude/projects/` 에 남기는 대화
+  기록을 내용으로 검색하고, 고른 대화를 읽기 전용 창에서 읽는다. 명령 팔레트에도 같은
+  항목이 있다. 사용자가 친 글과 Claude 의 답만 색인하고, 도구 결과, `<system-reminder>` 같은
+  주입 문맥, 작업 알림은 뺀다. 낱말을 여러 개 치면 한 메시지 안에 모두 들어 있어야 맞고,
+  대소문자는 가리지 않는다. 검색어가 비어 있으면 최근 대화 목록이 나온다. 결과를 열면 찾은
+  곳으로 스크롤되고 `Enter` / `Shift+Enter` 로 다음 / 이전 일치로 옮겨 가며, 글을 골라
+  복사할 수 있다. 제목은 Claude Code 가 대화마다 붙이는 자동 제목을 쓴다. 이어가기와
+  분기는 일부러 넣지 않았다.
+  - 첫 검색 때 대화 기록을 한 번 전부 읽고(대화 177개, 약 400MB 에서 0.8초), 그 뒤로는
+    파일마다 늘어난 부분만 읽는다(바뀐 것이 없으면 1ms 미만). 색인은 메모리에만 있고
+    디스크에 쓰지 않는다. 구현은 `crates/amux-core/src/history.rs`.
+- **Claude 구독 한도(5시간 창, 주간 창)를 amux 가 5분마다 조회해 모든 Claude 세션이 같은
+  숫자를 보게 한다.** Claude Code 가 상태줄(statusLine) 스크립트에 넘겨 주는 `rate_limits`
+  는 그 세션이 마지막으로 받은 API 응답 시점의 값이라, 한동안 쉰 세션은 낡은 숫자를
+  보여 주고 세션끼리도 숫자가 달랐다. 이제 amux 가 Claude Code 의 `/usage` 와 같은 곳
+  (`https://api.anthropic.com/api/oauth/usage`)에 5분마다 한 번 묻고, 답을
+  `~/.cache/amux/claude-usage.json` 한 파일에 적는다. 창이 다음 조회보다 먼저 초기화되면
+  초기화 20초 뒤에 한 번 더 묻는다. 상태줄 스크립트가 세션 값 대신 이 파일을 읽으면 모든
+  세션이 같은 최신 숫자를 보여 준다.
+  - 파일 모양은 `{"fetched_at": 에포크초, "five_hour": {"used_percentage": 24.0,
+    "resets_at": 에포크초}, "seven_day": {...}}` 이다. 창 하나의 모양이 Claude Code 가
+    상태줄에 넘기는 `rate_limits.five_hour` 와 같아서, 기존 스크립트의 jq 경로를 거의
+    그대로 쓸 수 있다. amux 가 꺼진 뒤 남은 파일에 속지 않도록 `fetched_at` 이 오래된
+    파일(예: 15분 넘음)은 무시하는 것이 좋다. 경로는 환경 변수 `AMUX_USAGE_FILE` 로
+    바꿀 수 있다.
+  - 쉬고 있는 세션의 상태줄도 다시 그려지게 하려면 `~/.claude/settings.json` 의
+    `statusLine` 에 `"refreshInterval": 60` 을 넣는다. Claude Code 가 새 응답이 없어도
+    60초마다 스크립트를 다시 돌린다.
+  - 토큰은 Claude Code 가 저장해 둔 `~/.claude/.credentials.json` 의 구독 토큰을 읽어
+    `api.anthropic.com` 에만 보낸다. amux 는 토큰을 갱신(refresh)하지 않는다. 갱신하면
+    Claude Code 가 들고 있는 토큰이 바뀌어 버리기 때문이다. 토큰이 만료되면 조회만
+    실패하고, 떠 있는 Claude 세션이 토큰을 갱신하면 다음 조회부터 다시 된다. 구독
+    로그인이 없는 기계에서는 조용히 아무것도 하지 않는다.
+  - 구현은 `crates/amux-core/src/usage.rs` 이고, cargo feature `usage` 뒤에 있어 앱
+    (`src-tauri`)만 켠다.
 - **🍎 macOS 지원** — 원래 Ubuntu 전용이던 앱을 macOS(Apple Silicon)에서도 빌드·실행되도록
   이식. 코어는 이미 크로스플랫폼(IPC=`interprocess` Unix 소켓, PTY=`portable-pty`)이라,
   리눅스 `/proc`에 의존하던 메타데이터 수집만 macOS 경로를 새로 붙였다.
@@ -334,7 +384,7 @@ Enter를 치면 그때 만들어집니다(2단계에서는 방금 정한 워크�
 | 키 | 동작 |
 |---|---|
 | Ctrl+T | 새 탭 (제목 입력창) |
-| Ctrl+W | 탭 닫기 |
+| Ctrl+W | 탭 닫기 (확인 창이 먼저 뜸, Enter 로 확인) |
 | Ctrl+Tab / Ctrl+Shift+Tab | 다음 / 이전 탭 |
 | Alt+1…9 | N번째 탭으로 바로 이동 |
 | Ctrl+Shift+N | 새 워크스페이스 (이름 → 첫 탭 이름, 2단계 입력창) |
@@ -345,6 +395,7 @@ Enter를 치면 그때 만들어집니다(2단계에서는 방금 정한 워크�
 | Ctrl+Shift+1…9 | N번째 워크스페이스로 바로 이동 |
 | Ctrl+Shift+B | 브로드캐스트 (**현재 탭**의 pane 동시 입력) |
 | Ctrl+Shift+P | 명령 팔레트 |
+| Ctrl+Shift+H | 지난 대화 검색 (Claude 대화 기록을 내용으로 찾아 읽기) |
 | Ctrl+Shift+A | Mission Control 대시보드 |
 | Ctrl+Shift+E | 하단 입력창 ↔ 터미널 포커스 이동 (꺼져 있으면 켜면서 이동) |
 | Shift+Enter | 줄바꿈 (Claude Code 입력창 포함 · 하단 입력창에서도 동일) |

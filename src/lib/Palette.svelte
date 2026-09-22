@@ -4,7 +4,6 @@
   import { tick } from "svelte";
   import {
     closePane,
-    closeTab,
     focusPane,
     focusTab,
     focusWorkspace,
@@ -17,6 +16,8 @@
     activeWorkspace,
     broadcast,
     canRestoreSession,
+    confirmCloseTab,
+    historySearch,
     palette,
     focusTerm,
     paneLabel,
@@ -96,7 +97,8 @@
       });
     }
     if (at) {
-      out.push({ kind: "action", label: "탭 닫기", detail: "Ctrl+W", run: () => void closeTab(at.id) });
+      // Same action as Ctrl+W, so the same question first.
+      out.push({ kind: "action", label: "탭 닫기", detail: "Ctrl+W", run: () => void confirmCloseTab(at) });
     }
     if (ap) {
       out.push({ kind: "action", label: "오른쪽으로 분할", run: () => void splitPane(ap, "horizontal") });
@@ -115,6 +117,12 @@
         run: () => void restorePreviousSession(),
       });
     }
+    out.push({
+      kind: "action",
+      label: "🕘 지난 대화 검색",
+      detail: "Ctrl+Shift+H — 지난 Claude 대화를 내용으로 찾아 읽습니다",
+      run: () => (historySearch.open = true),
+    });
     // Route through the sidebar prompt rather than creating one outright, so
     // every entry point asks for the workspace and first-tab names alike.
     out.push({

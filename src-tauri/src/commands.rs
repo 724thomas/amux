@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use amux_core::history::{projects_dir, Conversation, HistoryIndex, Hit};
 use amux_core::session::{ResumePrefs, SavedSession, SessionSummary};
 use amux_core::Engine;
 use amux_protocol::{PaneId, Snapshot, SplitAxis, TabId, WorkspaceId};
@@ -70,6 +71,47 @@ pub fn restore_session(
     let restored = engine.restore_session(&saved, cols, rows, &prefs).map_err(err)?;
     previous.consume();
     Ok(restored)
+}
+
+// -- past conversations --------------------------------------------------------
+
+/// The index of past Claude conversations behind "지난 대화 검색". Built on the
+/// first search, then kept current by re-reading only what the transcripts
+/// appended since. Both commands run on a blocking thread: the first build
+/// reads every transcript once, and that must not stall the UI thread.
+#[derive(Default)]
+pub struct History(Arc<Mutex<HistoryIndex>>);
+
+#[tauri::command]
+pub async fn search_history(
+    history: State<'_, History>,
+    query: String,
+    limit: usize,
+) -> Result<Vec<Hit>, String> {
+    let index = Arc::clone(&history.0);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut index = index.lock().map_err(err)?;
+        if let Some(root) = projects_dir() {
+            index.refresh(&root);
+        }
+        Ok(index.search(&query, limit))
+    })
+    .await
+    .map_err(err)?
+}
+
+#[tauri::command]
+pub async fn history_conversation(
+    history: State<'_, History>,
+    session: String,
+) -> Result<Option<Conversation>, String> {
+    let index = Arc::clone(&history.0);
+    tauri::async_runtime::spawn_blocking(move || {
+        let index = index.lock().map_err(err)?;
+        Ok(index.conversation(&session))
+    })
+    .await
+    .map_err(err)?
 }
 
 // -- workspaces --------------------------------------------------------------
