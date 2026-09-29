@@ -39,6 +39,8 @@ function trackStatus(snap: Snapshot) {
     if (!prev || prev.status !== p.status) statusSince.set(p.id, { status: p.status, since: now });
   }
   for (const id of [...statusSince.keys()]) if (!seen.has(id)) statusSince.delete(id);
+  // A closed pane's command log has no reader left; drop it with its timer.
+  for (const id of Object.keys(paneCommands.log)) if (!seen.has(id)) delete paneCommands.log[id];
 }
 
 // Each Terminal registers how to focus its xterm so that switching the
@@ -79,6 +81,32 @@ export function registerComposerFocus(pane: PaneId, toggle: () => void): () => v
 /** Hop the keyboard between a pane's composer and its terminal. */
 export function toggleComposerFocus(pane: PaneId | null | undefined) {
   if (pane) composerFocus.get(pane)?.();
+}
+
+// --- Per-pane command log ----------------------------------------------------
+// Every command the user actually submitted in a pane, oldest first. It lives
+// here (module scope, keyed by pane id) and NOT inside Terminal.svelte, because
+// a component's state dies with the component: splitting or drag-moving a pane
+// flips its tab's layout node from "leaf" to "split", which destroys the
+// PaneView/Terminal pair and mounts a fresh one. A log kept in the component
+// would be wiped by every split. Kept here, it survives.
+//
+// Bounded at CMD_LOG_CAP entries per pane: a log is a convenience, not a
+// transcript, and the terminal's own scrollback already holds the full history.
+const CMD_LOG_CAP = 200;
+
+export const paneCommands = $state<{ log: Record<PaneId, string[]> }>({ log: {} });
+
+/** Append one submitted command to a pane's log. Repeats are NOT collapsed:
+ *  sending the same prompt twice ("계속", "다시") is a real thing the user did
+ *  twice, and the log is meant to be every command, not a set of them. (A bare
+ *  extra Enter cannot slip in here anyway: commitLine clears its buffer first,
+ *  so the next Enter carries no text and never reaches this function.) */
+export function recordCommand(pane: PaneId, text: string) {
+  const log = paneCommands.log[pane] ?? [];
+  const next = [...log, text];
+  if (next.length > CMD_LOG_CAP) next.splice(0, next.length - CMD_LOG_CAP);
+  paneCommands.log[pane] = next;
 }
 
 function activeKey(snap: Snapshot | null): string {

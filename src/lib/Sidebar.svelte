@@ -423,7 +423,7 @@
 
   <!-- 직전 명령 표시 토글 (폰트 바로 아래) — 각 pane 맨 위에 마지막으로 보낸
        명령을 가로 전체 한 줄 띠로 표시. -->
-  <div class="toggle-control" title="각 pane 맨 위에 직전에 보낸 명령을 가로 전체 한 줄로 표시 (길면 끝을 … 로 자르고, 올려두면 전체가 보입니다)">
+  <div class="toggle-control" title="각 pane 맨 위에 직전에 보낸 명령을 가로 전체 한 줄로 표시 (길면 끝을 … 로 자르고, 올려두면 전체가 보입니다). 그 띠를 클릭하면 그 pane에 보낸 명령이 최신순으로 모두 펼쳐지고(스크롤 가능), 다시 클릭하면 직전 명령 한 줄로 접힙니다.">
     <span class="font-label">직전 명령 표시</span>
     <button
       class="switch"
