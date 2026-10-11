@@ -26,6 +26,13 @@ import {
 } from "./state.svelte";
 import { adjustFontSize, resetFontSize } from "./settings.svelte";
 
+/**
+ * macOS에서는 복사·붙여넣기가 Ctrl이 아니라 Cmd(metaKey) 조합이다. 앱 단축키는
+ * 리눅스와 같은 Ctrl 조합을 그대로 쓰되, 손에 깊이 박힌 클립보드 키만
+ * 플랫폼 관례를 따른다(Terminal.svelte).
+ */
+export const IS_MAC = /mac/i.test(navigator.platform || navigator.userAgent);
+
 interface Rect {
   x: number;
   y: number;

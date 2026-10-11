@@ -11,7 +11,7 @@
   import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
   import "@xterm/xterm/css/xterm.css";
   import { writePane, resizePane, subscribePane, type PaneId } from "./ipc";
-  import { handleKey } from "./keymap";
+  import { handleKey, IS_MAC } from "./keymap";
   import { adjustFontSize, settings, setShowComposer } from "./settings.svelte";
   import { themeById } from "./themes";
   import {
@@ -543,6 +543,32 @@
       ) {
         extendKeyboardSelection(e.key);
         return false;
+      }
+      // macOS 관례의 클립보드 키 — Cmd+C / Cmd+V / Cmd+X.
+      //
+      // 네이티브로 기대지 못한다: 창에 Edit 메뉴가 없어 Cmd 조합에 걸린 시스템
+      // 키 등가물이 없고, 설령 Paste가 와도 Cmd+C 쪽은 xterm의 선택이 DOM
+      // 선택이 아니라 캔버스 위 자체 모델이라 WebKit이 복사할 것을 못 찾는다.
+      // 그래서 Ctrl 경로와 똑같이 Rust 클립보드로 직접 처리한다. 우클릭 메뉴가
+      // 되는데 단축키만 안 되던 이유가 이것이다.
+      if (e.type === "keydown" && IS_MAC && e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.code === "KeyC" && term.hasSelection()) {
+          void copySelection().then(() => {
+            kbSel = null;
+            term.clearSelection();
+          });
+          return false;
+        }
+        if (e.code === "KeyV") {
+          // 브라우저 네이티브 paste가 한 번 더 붙는 것 방지
+          e.preventDefault();
+          void pasteClipboard();
+          return false;
+        }
+        if (e.code === "KeyX" && term.hasSelection()) {
+          void cutSelection();
+          return false;
+        }
       }
       if (e.type === "keydown" && e.ctrlKey && e.shiftKey && !e.altKey) {
         // Terminal-convention clipboard keys, via the Rust clipboard
