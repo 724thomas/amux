@@ -95,6 +95,11 @@ pub enum SavedLayout {
         /// written before this field existed, hence `serde(default)`.
         #[serde(default)]
         claude_session: Option<String>,
+        /// The pane showed the Claude chat (not its terminal). A restore opens
+        /// the chat again, on `claude_session` when there is one, instead of
+        /// typing `claude --resume` at the shell. Absent on older files.
+        #[serde(default)]
+        chat: bool,
     },
     Split {
         axis: SplitAxis,
@@ -399,7 +404,7 @@ mod tests {
                     name: format!("ws {i}"),
                     tabs: vec![SavedTab {
                         name: "탭 1".into(),
-                        layout: SavedLayout::Leaf { cwd: None, claude_session: None },
+                        layout: SavedLayout::Leaf { cwd: None, claude_session: None, chat: false },
                         active_pane: 0,
                     }],
                     active_tab: 0,
@@ -432,12 +437,12 @@ mod tests {
         session.workspaces[0].tabs[0].layout = SavedLayout::Split {
             axis: SplitAxis::Horizontal,
             ratio: 0.5,
-            first: Box::new(SavedLayout::Leaf { cwd: Some("/a".into()), claude_session: None }),
+            first: Box::new(SavedLayout::Leaf { cwd: Some("/a".into()), claude_session: None, chat: false }),
             second: Box::new(SavedLayout::Split {
                 axis: SplitAxis::Vertical,
                 ratio: 0.3,
-                first: Box::new(SavedLayout::Leaf { cwd: None, claude_session: None }),
-                second: Box::new(SavedLayout::Leaf { cwd: None, claude_session: None }),
+                first: Box::new(SavedLayout::Leaf { cwd: None, claude_session: None, chat: false }),
+                second: Box::new(SavedLayout::Leaf { cwd: None, claude_session: None, chat: false }),
             }),
         };
         let summary = session.summary();

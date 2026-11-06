@@ -17,6 +17,8 @@ interface Settings {
   /** Pin a prompt composer at the bottom of every pane (type without the
    *  terminal auto-scrolling to the newest output). */
   showComposer: boolean;
+  /** New workspaces and tabs open as a Claude chat instead of a terminal. */
+  chatByDefault: boolean;
 }
 
 const DEFAULTS: Settings = {
@@ -27,6 +29,7 @@ const DEFAULTS: Settings = {
   showLastInput: true,
   lastInputPos: { x: 8, y: 6 },
   showComposer: true,
+  chatByDefault: false,
 };
 
 function load(): Settings {
@@ -91,6 +94,11 @@ export function toggleShowComposer() {
  *  call saveSettings() once on drag end to avoid a localStorage write per move). */
 export function setLastInputPos(x: number, y: number) {
   settings.lastInputPos = { x: Math.round(x), y: Math.round(y) };
+}
+
+export function toggleChatByDefault() {
+  settings.chatByDefault = !settings.chatByDefault;
+  save();
 }
 
 export function saveSettings() {

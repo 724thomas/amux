@@ -970,8 +970,9 @@ impl Engine {
             Some(pane) => SavedLayout::Leaf {
                 cwd: pane.meta.lock().cwd.clone(),
                 claude_session: pane.claude_session.lock().clone(),
+                chat: pane.chat.load(Ordering::SeqCst),
             },
-            None => SavedLayout::Leaf { cwd: None, claude_session: None },
+            None => SavedLayout::Leaf { cwd: None, claude_session: None, chat: false },
         };
         SavedSession {
             version: session::FORMAT_VERSION,
@@ -1156,7 +1157,7 @@ impl Engine {
         out: &mut Respawn,
     ) -> Result<LayoutNode, EngineError> {
         match node {
-            SavedLayout::Leaf { cwd, claude_session } => {
+            SavedLayout::Leaf { cwd, claude_session, chat } => {
                 // A directory that has since been deleted or renamed must not
                 // sink the restore: drop it and let the shell start at $HOME.
                 let cwd = cwd
@@ -1179,7 +1180,14 @@ impl Engine {
                     // back to a bare shell — and on a machine whose hooks are
                     // not up to date yet, it would never be remembered at all.
                     *pane.claude_session.lock() = Some(session.clone());
-                    out.resumes.push((pane.id, session.clone()));
+                    // A chat pane gets its chat back from the front end (the
+                    // flag below): nothing is typed at its shell.
+                    if !chat {
+                        out.resumes.push((pane.id, session.clone()));
+                    }
+                }
+                if *chat {
+                    pane.chat.store(true, Ordering::SeqCst);
                 }
                 Ok(LayoutNode::Leaf { pane: pane.id })
             }
@@ -1721,7 +1729,7 @@ mod tests {
                 name: "복구된 것".into(),
                 tabs: vec![SavedTab {
                     name: "탭 1".into(),
-                    layout: SavedLayout::Leaf { cwd: None, claude_session: None },
+                    layout: SavedLayout::Leaf { cwd: None, claude_session: None, chat: false },
                     active_pane: 0,
                 }],
                 active_tab: 0,
@@ -1786,6 +1794,37 @@ mod tests {
         engine.shutdown();
     }
 
+    /// A pane showing the chat is saved as a chat, and comes back as one: the
+    /// flag is set for the front end to open the chat, and nothing is queued
+    /// to be typed at its shell. A terminal pane stays a terminal pane.
+    #[test]
+    fn a_chat_pane_is_saved_and_restored_as_a_chat() {
+        let engine = Engine::new();
+        let (_ws, _tab, left) = engine
+            .create_workspace(Some("채팅".into()), Some("탭".into()), None, 80, 24)
+            .unwrap();
+        let right = engine.split_pane(left, SplitAxis::Horizontal, 80, 24).unwrap();
+        engine.set_pane_chat(left, true).unwrap();
+        let saved = engine.session_snapshot();
+        match &saved.workspaces[0].tabs[0].layout {
+            SavedLayout::Split { first, second, .. } => {
+                assert!(matches!(&**first, SavedLayout::Leaf { chat: true, .. }), "{first:?}");
+                assert!(matches!(&**second, SavedLayout::Leaf { chat: false, .. }), "{second:?}");
+            }
+            other => panic!("expected a split, got {other:?}"),
+        }
+        let _ = right;
+        engine.shutdown();
+
+        let again = Engine::new();
+        assert_eq!(again.restore_session(&saved, 80, 24, &ResumePrefs::default()).unwrap(), 1);
+        let snapshot = again.snapshot();
+        let mut flags: Vec<bool> = snapshot.panes.iter().map(|p| p.chat).collect();
+        flags.sort();
+        assert_eq!(flags, vec![false, true], "one chat pane and one terminal pane come back");
+        again.shutdown();
+    }
+
     /// A conversation Claude can no longer find must be dropped silently. If it
     /// were not, the restored pane would greet the user with a resume error
     /// where they expected their agent — and, worse, the same rejection is what
@@ -1804,6 +1843,7 @@ mod tests {
                         cwd: None,
                         // No such transcript, so nothing may be typed.
                         claude_session: Some("00000000-0000-4000-8000-000000000000".into()),
+                        chat: false,
                     },
                     active_pane: 0,
                 }],

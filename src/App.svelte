@@ -38,6 +38,8 @@
   import { setSidebarWidth, settings } from "./lib/settings.svelte";
   import { themeById } from "./lib/themes";
   import { sendLook } from "./lib/chat/popout.svelte";
+  import { openChatInNewTab } from "./lib/chat/chat.svelte";
+  import { paneOfTab } from "./lib/state.svelte";
 
   const snapshot = $derived(app.snapshot);
   const bcastCount = $derived(activeTabPaneCount());
@@ -100,7 +102,10 @@
     const name = newTabName.trim();
     tabCreate.workspace = null;
     newTabName = "";
-    void newTab(workspace, name || undefined);
+    void newTab(workspace, name || undefined).then((tab) => {
+      // "기본 채팅 모드": the new tab opens as a Claude chat.
+      if (settings.chatByDefault) void openChatInNewTab(() => paneOfTab(tab));
+    });
   }
 
   function cancelCreateTab() {

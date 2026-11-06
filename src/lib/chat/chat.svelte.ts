@@ -166,9 +166,11 @@ export function initChats() {
 }
 
 /** The engine flag says this pane shows a chat, but this webview has no
- *  record of it: the page was reloaded. Re-attach to the running process
- *  (Claude still holds the conversation; only the drawn history is gone), or
- *  clear a flag whose process already ended. */
+ *  record of it. Either the page was reloaded: re-attach to the running
+ *  process (Claude still holds the conversation; only the drawn history is
+ *  gone). Or no process runs: the pane was a chat when amux last closed (a
+ *  restored session), so the chat opens again, on the pane's conversation
+ *  when it has one (drawn above from its transcript), else a new one. */
 const adopting = new Set<PaneId>();
 export async function adoptChat(pane: PaneId) {
   if (chats.byPane[pane] || adopting.has(pane)) return;
@@ -177,7 +179,13 @@ export async function adoptChat(pane: PaneId) {
     const gen = await chatRunning(pane);
     if (chats.byPane[pane]) return;
     if (gen == null) {
-      await chatStop(pane);
+      await paneReady(pane);
+      if (chats.byPane[pane]) return;
+      const session = paneInfo(pane)?.claude_session ?? null;
+      if (session) takeOver(pane, session, false);
+      else chats.byPane[pane] = newSession();
+      chats.byPane[pane].open = true;
+      await startProcess(pane, session);
       return;
     }
     const model = createModel();
@@ -193,6 +201,23 @@ export async function adoptChat(pane: PaneId) {
   } finally {
     adopting.delete(pane);
   }
+}
+
+/** A pane just made (or restored): wait until it is in the snapshot with its
+ *  folder known, so a chat starts there rather than in the home folder. At
+ *  most a few seconds; then go on with what is known. */
+async function paneReady(pane: PaneId) {
+  for (let i = 0; i < 100 && !paneInfo(pane)?.meta.cwd; i++) await new Promise((r) => setTimeout(r, 30));
+}
+
+/** Open the chat in the first pane of a tab just made (the "기본 채팅 모드"
+ *  setting): wait for the tab to show up in the snapshot, then for its pane. */
+export async function openChatInNewTab(findPane: () => PaneId | null) {
+  let pane: PaneId | null = null;
+  for (let i = 0; i < 100 && !(pane = findPane()); i++) await new Promise((r) => setTimeout(r, 30));
+  if (!pane) return;
+  await paneReady(pane);
+  await openChat(pane);
 }
 
 /** `--permission-mode` spells "default" as "manual". */

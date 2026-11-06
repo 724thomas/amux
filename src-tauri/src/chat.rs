@@ -510,6 +510,9 @@ pub fn chat_stop(
     pane: PaneId,
 ) -> Result<(), String> {
     chats.stop(pane);
+    // No conversation runs in the pane any more: a restore must not type the
+    // chat's `claude --resume` at its shell.
+    let _ = engine.set_claude_session(pane, None);
     engine.set_pane_chat(pane, false).map_err(err)
 }
 

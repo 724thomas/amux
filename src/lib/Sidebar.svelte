@@ -39,8 +39,11 @@
     settings,
     toggleShowLastInput,
     toggleShowComposer,
+    toggleChatByDefault,
   } from "./settings.svelte";
   import { THEMES, themeById } from "./themes";
+  import { openChatInNewTab } from "./chat/chat.svelte";
+  import { paneOfWorkspace } from "./state.svelte";
 
   const snapshot = $derived(app.snapshot);
   // 지금 봐야 할 에이전트 (🟡 waiting → 🟢 processed, 오래된 순) — 하단 패널.
@@ -104,7 +107,10 @@
     const name = newWsName;
     const tabName = wsDraft.trim();
     cancelCreateWorkspace();
-    void createWorkspace(name || undefined, tabName || undefined);
+    void createWorkspace(name || undefined, tabName || undefined).then((ws) => {
+      // "기본 채팅 모드": the new workspace's first tab opens as a Claude chat.
+      if (settings.chatByDefault) void openChatInNewTab(() => paneOfWorkspace(ws));
+    });
   }
   function cancelCreateWorkspace() {
     wsCreate.open = false;
@@ -451,6 +457,24 @@
       aria-checked={settings.showComposer ?? true}
       aria-label="하단 입력창 토글"
       onclick={toggleShowComposer}
+    >
+      <span class="knob"></span>
+    </button>
+  </div>
+
+  <!-- 기본 채팅 모드: 새 워크스페이스와 새 탭을 Claude 채팅 화면으로 연다. -->
+  <div
+    class="toggle-control"
+    title="켜면 새 워크스페이스와 새 탭이 Claude 채팅 화면으로 열립니다. 끄면 예전처럼 터미널(CLI)로 열립니다. 어느 쪽이든 Ctrl+Shift+M 으로 바꿀 수 있습니다."
+  >
+    <span class="font-label">기본 채팅 모드</span>
+    <button
+      class="switch"
+      class:on={settings.chatByDefault}
+      role="switch"
+      aria-checked={settings.chatByDefault}
+      aria-label="기본 채팅 모드 토글"
+      onclick={toggleChatByDefault}
     >
       <span class="knob"></span>
     </button>

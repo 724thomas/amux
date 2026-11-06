@@ -18,7 +18,8 @@
     item: ToolItem;
     /** Paths inside this folder show relative. */
     base?: string | null;
-    /** The files panel shows this edit in the file: start folded to one line. */
+    /** Unused: the card now starts folded wherever the files panel is
+     *  (beside the conversation, in the pop-out window, or closed). */
     compact?: boolean;
   } = $props();
 
@@ -28,7 +29,8 @@
   let timer: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
     const raw = item.inputJson;
-    if (item.inputDone || !raw || timer) return;
+    // Folded: nothing of the text is shown, so it is not read either.
+    if (!open || item.inputDone || !raw || timer) return;
     timer = setTimeout(() => {
       timer = null;
       const fields = partialFields(item.inputJson);
@@ -95,9 +97,12 @@
     return lines.length <= n ? { text, cut: 0 } : { text: lines.slice(-n).join("\n"), cut: lines.length - n };
   }
 
-  // Folded while the files panel shows the edit, unless the user chose.
+  // Folded to one line (file, +/- counts, state): the files panel shows the
+  // change in the file itself, and an approval card shows what it asks about.
+  // Open by itself only for a failure, whose message is read here. A click
+  // opens or folds it for good.
   let chosen = $state<boolean | null>(null);
-  const open = $derived(chosen ?? !compact);
+  const open = $derived(chosen ?? phase === "error");
 </script>
 
 <div class="edit {phase}">

@@ -220,6 +220,22 @@ export function activePane(): PaneId | null {
   return activeTab()?.active_pane ?? null;
 }
 
+/** The pane on screen in tab `tab`, once the snapshot has the tab. */
+export function paneOfTab(tab: string): PaneId | null {
+  for (const w of app.snapshot?.workspaces ?? []) {
+    const t = w.tabs.find((x) => x.id === tab);
+    if (t) return t.active_pane;
+  }
+  return null;
+}
+
+/** The pane on screen in workspace `ws`'s active tab, once the snapshot has it. */
+export function paneOfWorkspace(ws: string): PaneId | null {
+  const w = app.snapshot?.workspaces.find((x) => x.id === ws);
+  const t = w?.tabs.find((x) => x.id === w.active_tab);
+  return t?.active_pane ?? null;
+}
+
 export function paneInfo(id: PaneId): PaneInfo | null {
   return app.snapshot?.panes.find((p) => p.id === id) ?? null;
 }
