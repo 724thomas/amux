@@ -287,6 +287,11 @@ export const chatWrite = (pane: PaneId, gen: number, line: string) =>
   invoke<void>("chat_write", { pane, gen, line });
 
 export const chatStop = (pane: PaneId) => invoke<void>("chat_stop", { pane });
+/** Close the chat and give its conversation back to the terminal: `claude
+ *  --resume <session>` is typed at the shell once the chat's Claude is gone.
+ *  True when it typed (false: the shell was busy, or no transcript). */
+export const chatHandback = (pane: PaneId, session: string) =>
+  invoke<boolean>("chat_handback", { pane, session });
 
 /** Generation of the chat process running in `pane`, if any. */
 export const chatRunning = (pane: PaneId) => invoke<number | null>("chat_running", { pane });
@@ -349,3 +354,68 @@ export const filesPop = (pane: PaneId, out: boolean, look: Look | null) =>
   invoke<PopoutState>("files_pop", { pane, out, look });
 export const filesState = () => invoke<PopoutState>("files_state");
 export const filesLook = (look: Look) => invoke<void>("files_look", { look });
+
+// -- subagents of the Claude in a pane (src-tauri/src/subagents.rs) ----------
+
+/** A live Claude Code process found under a terminal pane's shell. */
+export interface ClaudeLink {
+  session: string;
+  pid: number;
+  /** It is working (not waiting for the person). */
+  busy: boolean;
+  /** The registry's status as written ("idle" while it waits for input). */
+  status: string;
+  /** When the process started (ms since the epoch). */
+  started_ms: number;
+}
+/** One subagent's transcript file and what its meta file says. */
+export interface AgentFile {
+  id: string;
+  agent_type: string | null;
+  description: string | null;
+  tool_use_id: string | null;
+  finished: boolean;
+  /** The person stopped it (its meta has `stoppedByUser`, no `finished`). */
+  stopped: boolean;
+  has_meta: boolean;
+  size: number;
+  created_ms: number;
+  modified_ms: number;
+}
+/** What a subagent card shows of one transcript line. */
+export type SubEntry =
+  | { k: "prompt"; text: string; ts: string }
+  | { k: "text"; text: string; ts: string }
+  | { k: "tool"; id: string; name: string; input: Record<string, unknown> | null; ts: string }
+  | { k: "result"; id: string; err: boolean; text: string; ts: string };
+export interface SubChunk {
+  items: SubEntry[];
+  next: number;
+  size: number;
+  /** The file was rewritten: what was read before is void. */
+  reset: boolean;
+}
+/** Pane id -> the Claude Code running in that terminal pane. */
+export const claudeLinks = () => invoke<Record<PaneId, ClaudeLink> | null>("claude_links");
+export const subagentsList = (session: string) => invoke<AgentFile[]>("subagents_list", { session });
+export const subagentRead = (session: string, agent: string, from: number) =>
+  invoke<SubChunk>("subagent_read", { session, agent, from });
+/** The person's prompts added to the main transcript since `from` (null: just find its end). */
+export const sessionPrompts = (session: string, from: number | null) =>
+  invoke<{ count: number; next: number }>("session_prompts", { session, from });
+
+// -- one conversation between a pane's terminal and its chat (src-tauri/src/handoff.rs)
+
+/** The Claude Code running under this pane's shell right now. */
+export const termClaudeLink = (pane: PaneId) => invoke<ClaudeLink | null>("term_claude_link", { pane });
+/** End it (only while it waits for input and still runs `session`); resolves once it is gone. */
+export const termClaudeEnd = (pane: PaneId, session: string) => invoke<void>("term_claude_end", { pane, session });
+/** The conversation so far, as the chat draws it above its own turns. */
+export interface SessionHistory {
+  entries: SubEntry[];
+  /** Earlier entries left out. */
+  omitted: number;
+  /** Compacted: what came before is only a summary to Claude now. */
+  compacted: boolean;
+}
+export const sessionHistory = (session: string) => invoke<SessionHistory>("session_history", { session });

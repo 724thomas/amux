@@ -4,7 +4,8 @@
   import Terminal from "./Terminal.svelte";
   import ChatView from "./chat/ChatView.svelte";
   import TermFiles from "./chat/TermFiles.svelte";
-  import { adoptChat, chatOf, chatOpen, openChat, toggleChat } from "./chat/chat.svelte";
+  import SubagentColumn from "./chat/SubagentColumn.svelte";
+  import { adoptChat, chatOf, chatOpen, openChat, paneNotes, toggleChat } from "./chat/chat.svelte";
   import { setTermFiles, termFiles } from "./chat/termFiles.svelte";
   import { dockBack, popout } from "./chat/popout.svelte";
   import {
@@ -57,6 +58,9 @@
   const filesOn = $derived(termFiles.open[pane] === true);
   /** The panel is in the pop-out window (then not shown here). */
   const popped = $derived(popout.panes.includes(pane));
+  /** How handing the conversation between terminal and chat went. */
+  const note = $derived(paneNotes.byPane[pane]);
+  /** Width of the main part (the whole pane, or 3 of 3:2 beside subagents). */
   let rowWidth = $state(0);
   /** Too narrow for terminal and panel side by side: the panel goes over it. */
   const filesOver = $derived(rowWidth > 0 && rowWidth < 640);
@@ -125,8 +129,12 @@
   ondragleave={() => (dropZone = null)}
   ondrop={onDrop}
 >
-  <!-- The terminal, and the files panel beside it when it is on. -->
-  <div class="pane-row" bind:clientWidth={rowWidth}>
+  <!-- The main part (the terminal with its files panel, or the chat over it)
+       and, while the Claude in it has subagents, their column on the right
+       (3:2). Both are always in the tree, so the column coming and going only
+       resizes the main part (one terminal resize), never rebuilds it. -->
+  <div class="pane-row">
+    <div class="main-part" bind:clientWidth={rowWidth}>
     <div class="term-wrap">
       <!-- While the chat covers the terminal, `inert` keeps every focus path of
            the terminal (click, shortcuts, the waiting-status hand-off) from
@@ -142,9 +150,14 @@
     {#if filesOn && !chatOn && !popped}
       <TermFiles {pane} overlay={filesOver} onclose={() => setTermFiles(pane, false)} />
     {/if}
+    {#if chatOn}
+      <ChatView {pane} {focused} tools={paneTools} />
+    {/if}
+    </div>
+    <SubagentColumn {pane} chat={chatOn} />
   </div>
-  {#if chatOn}
-    <ChatView {pane} {focused} tools={paneTools} />
+  {#if note}
+    <div class="pane-note" class:error={note.tone === "error"} role="status">{note.text}</div>
   {/if}
   {#if pending}
     <span class="pending-dot" title="알림 대기 중"></span>
@@ -266,6 +279,33 @@
     /* A files panel lying over a narrow terminal starts below the pane's
        floating toolbar, which would otherwise cover the panel's header. */
     --files-top: 34px;
+  }
+  .pane-note {
+    position: absolute;
+    top: 40px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 6;
+    max-width: min(80%, 560px);
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border-2);
+    background: var(--surface-2);
+    color: var(--text);
+    font-family: system-ui, sans-serif;
+    font-size: 13px;
+    line-height: 1.45;
+    box-shadow: 0 4px 16px rgb(0 0 0 / 0.35);
+    pointer-events: none;
+  }
+  .pane-note.error {
+    border-color: color-mix(in srgb, var(--red) 60%, var(--border-2));
+  }
+  .main-part {
+    position: relative;
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
   }
   .term-wrap {
     position: relative;

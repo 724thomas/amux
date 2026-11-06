@@ -5,7 +5,9 @@ use tauri::{Emitter, Manager};
 
 mod chat;
 mod commands;
+mod handoff;
 mod popout;
+mod subagents;
 mod workdir;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -33,6 +35,7 @@ pub fn run() {
         .manage(commands::History::default())
         .manage(Arc::clone(&chats))
         .manage(popout::Popout::default())
+        .manage(subagents::Subagents::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_snapshot,
             commands::saved_session,
@@ -72,6 +75,14 @@ pub fn run() {
             popout::files_pop,
             popout::files_state,
             popout::files_look,
+            subagents::claude_links,
+            handoff::term_claude_link,
+            handoff::term_claude_end,
+            handoff::session_history,
+            chat::chat_handback,
+            subagents::subagents_list,
+            subagents::subagent_read,
+            subagents::session_prompts,
         ])
         .setup(move |app| {
             engine.start_meta_sweeper();

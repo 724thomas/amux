@@ -10,13 +10,23 @@
 // requests) and feeds every line received into reducer.ts.
 import { listen } from "@tauri-apps/api/event";
 import {
+  chatHandback,
   chatRunning,
   chatStart,
   chatStop,
   chatWrite,
+  sessionHistory,
+  termClaudeEnd,
+  termClaudeLink,
   type ChatEventPayload,
+  type ClaudeLink,
   type PaneId,
+  type SubEntry,
 } from "../ipc";
+import { paneInfo } from "../state.svelte";
+import { subs } from "./subagentColumn.svelte";
+import { lastTermOf } from "./subagentLinks.svelte";
+import { running } from "./subagents";
 import {
   applyExit,
   applyLine,
@@ -39,10 +49,67 @@ export interface ChatSession {
   gen: number | null;
   model: ChatModel;
   draft: string;
-  /** The files panel: `auto` opens by itself when Claude starts editing a
-   *  file (if there is room), `closed` means the user closed it, so it stays
-   *  closed until they open it again. */
+  /** The files panel: `auto` opens by itself when Claude starts changing a
+   *  file, `closed` means the person closed it (it opens by itself again
+   *  from their next message on, see `holdSeq`). */
   panel: "auto" | "open" | "closed";
+  /** The request (`model.userSeq`) in which the person closed the panel or
+   *  put it back from the pop-out window: until their next message the
+   *  panel is left as they put it. -1: none. */
+  holdSeq: number;
+  /** When the running process was started (ms since the epoch), null when
+   *  not known (adopted after a reload). The subagent column uses it to tell
+   *  this run's subagents from ones an earlier run left unfinished. */
+  startedMs: number | null;
+  /** The chat took its conversation over from a terminal Claude it ended:
+   *  closing the chat gives it back (`claude --resume` typed there). */
+  tookOver: boolean;
+  /** When the chat was last closed (ms), to tell whether a terminal Claude
+   *  ran in the pane after it. */
+  closedAt: number;
+  /** The conversation so far, drawn above the chat's own turns, when the
+   *  chat picked up a terminal Claude's session (null: none). */
+  history: ChatHistory | null;
+}
+
+export interface ChatHistory {
+  session: string;
+  state: "loading" | "ready" | "error";
+  entries: SubEntry[];
+  /** Earlier entries left out. */
+  omitted: number;
+  /** Compacted: what came before is only a summary to Claude now. */
+  compacted: boolean;
+  error: string | null;
+}
+
+function newSession(model: ChatModel = createModel()): ChatSession {
+  return {
+    open: true,
+    gen: null,
+    model,
+    draft: "",
+    panel: "auto",
+    holdSeq: -1,
+    startedMs: null,
+    tookOver: false,
+    closedAt: 0,
+    history: null,
+  };
+}
+
+// A short line over a pane: how the hand-over between terminal and chat went
+// (or why it did not happen). Goes away by itself.
+export const paneNotes = $state<{ byPane: Record<PaneId, { text: string; tone: "info" | "error"; seq: number }> }>({
+  byPane: {},
+});
+let noteSeq = 0;
+export function notePane(pane: PaneId, text: string, tone: "info" | "error" = "info", ms = 6000) {
+  const seq = ++noteSeq;
+  paneNotes.byPane[pane] = { text, tone, seq };
+  setTimeout(() => {
+    if (paneNotes.byPane[pane]?.seq === seq) delete paneNotes.byPane[pane];
+  }, ms);
 }
 
 export const chats = $state<{ byPane: Record<PaneId, ChatSession> }>({ byPane: {} });
@@ -115,7 +182,7 @@ export async function adoptChat(pane: PaneId) {
     }
     const model = createModel();
     model.status = "idle";
-    chats.byPane[pane] = { open: true, gen, model, draft: "", panel: "auto" };
+    chats.byPane[pane] = { ...newSession(model), gen };
     pushNotice(
       chats.byPane[pane].model,
       "info",
@@ -145,12 +212,14 @@ function startProcess(pane: PaneId, resume: string | null): Promise<void> {
     s.model.exitCode = null;
     early.set(pane, []);
     try {
+      const startedMs = Date.now();
       const gen = await chatStart(pane, {
         resume,
         model: s.model.model,
         permissionMode: flagMode(s.model.permissionMode),
       });
       s.gen = gen;
+      s.startedMs = startedMs;
       const buf = early.get(pane) ?? [];
       early.delete(pane);
       if (!s.open) {
@@ -174,30 +243,142 @@ function startProcess(pane: PaneId, resume: string | null): Promise<void> {
   return run;
 }
 
-/** Show the chat in `pane`, starting Claude if it isn't running. A pane that
- *  chatted before picks its conversation back up. */
+/** Panes whose terminal conversation is being handed to the chat. */
+const handing = new Set<PaneId>();
+
+/** Show the chat in `pane`, starting Claude if it isn't running. The pane's
+ *  conversation goes on in it, the same session:
+ *    a Claude Code running in the terminal under the chat is ended (only
+ *    while it waits for input) and its session continues here;
+ *    one that ran and ended after the chat was last closed is picked up;
+ *    otherwise the chat's own conversation continues (as before). */
 export async function openChat(pane: PaneId) {
-  let s = chats.byPane[pane];
-  if (!s) {
-    chats.byPane[pane] = { open: true, gen: null, model: createModel(), draft: "", panel: "auto" };
-    s = chats.byPane[pane];
+  const before = chats.byPane[pane];
+  if (before && before.gen !== null) {
+    before.open = true;
+    return;
   }
-  s.open = true;
-  if (s.gen !== null) return;
-  await startProcess(pane, s.model.sessionId);
+  if (handing.has(pane)) return;
+  handing.add(pane);
+  try {
+    let link: ClaudeLink | null = null;
+    try {
+      link = await termClaudeLink(pane);
+    } catch {
+      link = null; // an older backend
+    }
+    if (link) {
+      const status = paneInfo(pane)?.status;
+      if (link.status !== "idle" || status === "processing" || status === "waiting") {
+        notePane(
+          pane,
+          "터미널의 Claude 가 일하는 중이라 채팅으로 넘기지 않았습니다. 끝난 뒤 다시 눌러 주세요.",
+          "error",
+        );
+        return;
+      }
+      // A subagent it sent off in the background may still be working while
+      // the main conversation waits for input: ending Claude would end it too.
+      const col = subs.byPane[pane];
+      if (col?.session === link.session && col.agents.some(running)) {
+        notePane(
+          pane,
+          "터미널의 Claude 가 맡긴 서브에이전트가 아직 일하는 중이라 채팅으로 넘기지 않았습니다. 끝난 뒤 다시 눌러 주세요.",
+          "error",
+        );
+        return;
+      }
+      notePane(pane, "터미널의 Claude 대화를 채팅으로 넘겨받는 중…", "info", 15000);
+      try {
+        await termClaudeEnd(pane, link.session);
+      } catch (e) {
+        notePane(pane, `채팅으로 넘기지 못했습니다: ${e}`, "error");
+        return;
+      }
+      takeOver(pane, link.session, true);
+      delete paneNotes.byPane[pane];
+    } else {
+      const seen = lastTermOf(pane);
+      if (seen && seen.at > (before?.closedAt ?? 0)) takeOver(pane, seen.session, false);
+    }
+    let s = chats.byPane[pane];
+    if (!s) {
+      chats.byPane[pane] = newSession();
+      s = chats.byPane[pane];
+    }
+    s.open = true;
+    if (s.gen !== null) return;
+    await startProcess(pane, s.model.sessionId);
+  } finally {
+    handing.delete(pane);
+  }
+}
+
+/** The chat continues `session`, a terminal Claude's: a fresh model on it
+ *  (the model and mode picks kept), and the conversation so far loaded from
+ *  its transcript to draw above. `ended`: we ended that Claude, so closing
+ *  the chat gives the conversation back to the terminal. */
+function takeOver(pane: PaneId, session: string, ended: boolean) {
+  const old = chats.byPane[pane];
+  const model = createModel();
+  if (old) {
+    model.model = old.model.model;
+    model.permissionMode = old.model.permissionMode;
+    model.models = old.model.models;
+  }
+  model.sessionId = session;
+  chats.byPane[pane] = {
+    ...newSession(model),
+    draft: old?.draft ?? "",
+    panel: old?.panel ?? "auto",
+    closedAt: old?.closedAt ?? 0,
+    tookOver: ended,
+    history: { session, state: "loading", entries: [], omitted: 0, compacted: false, error: null },
+  };
+  const s = chats.byPane[pane];
+  sessionHistory(session).then(
+    (h) => {
+      if (s.history?.session !== session) return;
+      s.history = { ...s.history, state: "ready", entries: h.entries, omitted: h.omitted, compacted: h.compacted };
+    },
+    (e) => {
+      if (s.history?.session !== session) return;
+      s.history = { ...s.history, state: "error", error: String(e) };
+    },
+  );
 }
 
 /** End the chat process and hand the pane back to its terminal. The drawn
  *  conversation stays, so reopening continues where it left off. */
 export async function closeChat(pane: PaneId) {
   const s = chats.byPane[pane];
+  // Taken over from the terminal's Claude: give the conversation back there.
+  const giveBack = s?.tookOver ? s.model.sessionId : null;
   if (s) {
     s.open = false;
+    s.closedAt = Date.now();
+    s.tookOver = false;
     // Forget the process now; its late `exit` line then finds no match.
     if (s.gen !== null) {
       s.gen = null;
       noteClosed(s.model);
     }
+  }
+  if (giveBack) {
+    try {
+      const typed = await chatHandback(pane, giveBack);
+      if (!typed) {
+        notePane(
+          pane,
+          `터미널이 다른 일을 하고 있어 Claude 를 다시 열지 않았습니다. 이어 하려면 claude --resume ${giveBack}`,
+          "info",
+          15000,
+        );
+      }
+    } catch (e) {
+      notePane(pane, `터미널에서 대화를 다시 열지 못했습니다: ${e}`, "error");
+    }
+    return;
   }
   try {
     await chatStop(pane);
@@ -229,6 +410,11 @@ export async function newConversation(pane: PaneId) {
   s.model = fresh;
   s.gen = null;
   s.open = true;
+  // Its requests count from 0 again.
+  s.holdSeq = -1;
+  // A new conversation: nothing taken over any more, nothing to give back.
+  s.history = null;
+  s.tookOver = false;
   await startProcess(pane, null);
 }
 

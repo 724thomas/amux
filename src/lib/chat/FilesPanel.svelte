@@ -186,6 +186,41 @@
     if (expanded[rel] && !dirs[rel]) void loadDir(rel);
   }
 
+  // ---- where a file is read from ----
+  /** Files that could not be read (no folder found for them): the editor
+   *  holds only the text being changed. */
+  const partial = new Set<string>();
+  /** Folders outside the root, and their own root (another repository, a
+   *  worktree beside this one, or the folder itself). */
+  const otherRoots = new Map<string, Promise<WorkRoot | null>>();
+  /** Where to read `path`: under the panel's root, or (a file outside it)
+   *  under the file's own, so the editor always holds the whole file. */
+  async function sourceOf(path: string): Promise<{ root: string; rel: string; inside: boolean } | null> {
+    // A panel that has just opened (a cell of the pop-out window that comes
+    // out for this very change) may not know its root yet.
+    const r = await until(() => (dead ? null : root ? root : rootError || !cwd ? null : undefined));
+    if (dead) return null;
+    const rel = r ? relOf(path) : null;
+    if (r && rel !== null) return { root: r.root, rel, inside: true };
+    const cut = path.lastIndexOf("/");
+    if (!path.startsWith("/") || cut <= 0) return null;
+    const dir = path.slice(0, cut);
+    let hit = otherRoots.get(dir);
+    if (!hit) {
+      hit = workRoot(dir).catch(() => null);
+      otherRoots.set(dir, hit);
+    }
+    const o = await hit;
+    // A folder that is not there yet (a file written into a new one): ask
+    // again next time.
+    if (!o) {
+      if (otherRoots.get(dir) === hit) otherRoots.delete(dir);
+      return null;
+    }
+    const base = o.root.endsWith("/") ? o.root : o.root + "/";
+    return path.startsWith(base) ? { root: o.root, rel: path.slice(base.length), inside: false } : null;
+  }
+
   // ---- what each file looked like on disk, last time we looked ----
   // Seeded with the files already changed when the chat opened, so changes
   // made before it are never played back as if they were new.
@@ -549,17 +584,20 @@
       }
     }
     if (stateOf(path)) return tab;
-    const r = root;
-    const rel = relOf(path);
+    const src = await sourceOf(path);
+    if (stateOf(path)) return tab;
     let text = "";
     let note: string | null = null;
-    if (r && rel !== null) {
-      const f = await workRead(r.root, rel).catch(() => null);
+    if (src) {
+      partial.delete(path);
+      // Watched in git status only when it is under the panel's own root.
+      if (src.inside) tab.rel = src.rel;
+      const f = await workRead(src.root, src.rel).catch(() => null);
       if (!f) note = "파일을 읽지 못했습니다";
       else if (f.kind === "text") {
         text = f.text;
         if (f.truncated) note = "파일이 커서 앞부분만 보입니다";
-        if (!known.has(rel) && !f.truncated) known.set(rel, f.text);
+        if (src.inside && !known.has(src.rel) && !f.truncated) known.set(src.rel, f.text);
         if (!f.truncated) noteOrigin(path, f.text);
       } else if (f.kind === "missing") {
         note = "새 파일";
@@ -567,7 +605,8 @@
       }
       else note = "바이너리 파일이라 내용을 보여 주지 않습니다";
     } else {
-      note = "작업 폴더 밖의 파일이라 바뀌는 부분만 보입니다";
+      partial.add(path);
+      note = "파일이 있는 폴더를 찾지 못해 바뀌는 부분만 보입니다";
     }
     if (!stateOf(path)) states.set(path, makeState(text));
     updatePlus(path);
@@ -598,6 +637,7 @@
       }
     }
     states.delete(path);
+    partial.delete(path);
   }
 
   // ---- the playback queue ----
@@ -610,6 +650,7 @@
   let activity = $state<{ path: string; kind: Job["kind"]; text: string } | null>(null);
 
   function enqueue(job: Job) {
+    if (dead) return;
     queue.push(job);
     busy.add(job.path);
     if (!tabs.some((t) => t.path === job.path)) void ensureTab(job.path);
@@ -657,15 +698,18 @@
   /** Animate only when the user can see it: the panel is shown, and the file
    *  is the one on screen or following may bring it there. */
   async function canAnimate(path: string): Promise<boolean> {
+    // Gone (the panel moved to the pop-out window in the middle of a change):
+    // its props are no longer to be read.
+    if (dead) return false;
     // The panel may be opening for this very job: give it a moment.
-    for (let i = 0; i < 20 && !(visible && view); i++) await sleep(15);
-    if (!visible || !view || document.hidden) return false;
+    for (let i = 0; i < 20 && !dead && !(visible && view); i++) await sleep(15);
+    if (dead || !visible || !view || document.hidden) return false;
     if (!follow && peekAt && Date.now() - peekAt >= RESUME_MS) follow = true;
     if (!follow && active !== path) return false;
     activate(path);
     return true;
   }
-  const watching = (path: string) => visible && !!view && active === path && !document.hidden && !dead;
+  const watching = (path: string) => !dead && visible && !!view && active === path && !document.hidden;
 
   // Fields of a tool call's input, while it streams and after.
   const parsed = new WeakMap<object, { len: number; fields: Record<string, PartialField> }>();
@@ -714,11 +758,15 @@
           : null;
         const effects: unknown[] = [setLiveMarks.of(marks)];
         if (m?.caret != null && view && active === path) {
-          // A jump (to the next change) centers it; typing just keeps it in view.
+          // A jump (to the next change) centers it; typing just keeps it in
+          // view, sideways too (lines are not wrapped): the text being typed
+          // stays on screen, with some room after it.
           const pos = start + m.caret;
           const line = view.state.doc.lineAt(Math.min(pos, view.state.doc.length)).number;
           const far = lastScroll < 0 || Math.abs(line - lastScroll) > 12;
-          effects.push(EditorView.scrollIntoView(pos, { y: far ? "center" : "nearest", yMargin: 56 }));
+          effects.push(
+            EditorView.scrollIntoView(pos, { y: far ? "center" : "nearest", yMargin: 56, x: "nearest", xMargin: 64 }),
+          );
           lastScroll = line;
         }
         apply(path, { changes, effects: effects as never });
@@ -786,6 +834,7 @@
 
   async function applyQuietly(job: Extract<Job, { kind: "edit" | "write" }>) {
     const { path, row } = job;
+    if (dead) return;
     say(path, job.kind, visible ? "다른 파일을 보고 있어 결과만 반영합니다" : "패널이 닫혀 있어 결과만 반영합니다");
     const ready = await until(() => (row.inputDone || row.done ? true : undefined));
     if (!ready || (row.done && row.isError) || !stateOf(path)) return;
@@ -821,7 +870,7 @@
       return row.inputDone || row.done ? null : undefined;
     });
     if (!old) return;
-    if (docOf(path).indexOf(old) < 0 && relOf(path) === null) setDoc(path, old);
+    if (docOf(path).indexOf(old) < 0 && partial.has(path)) setDoc(path, old);
     const doc = docOf(path);
     const at = doc.indexOf(old);
     const st = stateOf(path);
@@ -887,6 +936,16 @@
     say(path, "replay", "파일에 생긴 변경을 보여 줬습니다");
   }
 
+  /** The first of `m`'s file-changing calls that is still under way. */
+  function firstOpenEdit(m: FileFeed): number {
+    for (let i = 0; i < m.editOrder.length; i++) {
+      const at = m.toolIds[m.editOrder[i]];
+      const row = at === undefined ? undefined : m.items[at];
+      if (row?.kind === "tool" && !row.done) return i;
+    }
+    return m.editOrder.length;
+  }
+
   // New file-changing calls from Claude, in the order their file became known.
   let seenModel: FileFeed | null = null;
   let seenEdits = 0;
@@ -896,7 +955,19 @@
     untrack(() => {
       if (m !== seenModel) {
         seenModel = m;
-        seenEdits = 0;
+        // A panel that starts on a conversation already under way (a cell of
+        // the pop-out window coming out in the middle of a change, or coming
+        // back): the files changed before get their tabs as they are on disk
+        // now; only the calls still being written are drawn.
+        const open = firstOpenEdit(m);
+        const before = new Set<string>();
+        for (const id of m.editOrder.slice(0, open)) {
+          const at = m.toolIds[id];
+          const row = at === undefined ? undefined : m.items[at];
+          if (row?.kind === "tool" && row.path) before.add(row.path);
+        }
+        for (const path of [...before].slice(-MAX_TABS)) void ensureTab(path);
+        seenEdits = open;
       }
       for (const id of m.editOrder.slice(seenEdits, n)) {
         const at = m.toolIds[id];

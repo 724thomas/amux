@@ -6,8 +6,11 @@
   //   - which panes are out, and the main window's theme: `files:state`
   //   - names, folders and statuses of the panes: `state:snapshot`
   //   - a chat's tool calls, typed while Claude writes them: `chat:event`, read
-  //     into a chat model of its own. It starts reading when a panel comes out,
-  //     so a call already under way then is played back from disk instead.
+  //     into a chat model of its own, for every chat (out here or not) while
+  //     this window is open: a chat whose panel comes out in the middle of a
+  //     change (the main window sends it here when one starts) has the call
+  //     from its start. A call already under way when this window opened is
+  //     played back from disk instead.
   //   - a terminal's changes: played back from disk when its status says a
   //     tool call finished (statusFeed.ts), as beside the terminal.
   import { onDestroy, onMount, untrack } from "svelte";
@@ -81,8 +84,10 @@
         drivers.get(pane)?.update(info.status);
       }
     }
+    // Every chat keeps its model (a panel may come out at any moment); a
+    // pane that closed or went back to its terminal drops it.
     for (const pane of Object.keys(chats)) {
-      if (!panes.includes(pane) || (snap && snap.panes.some((p) => p.id === pane && !p.chat))) delete chats[pane];
+      if (snap && !snap.panes.some((p) => p.id === pane && p.chat)) delete chats[pane];
     }
     for (const pane of Object.keys(terms)) {
       if (panes.includes(pane) && !isChat(pane)) continue;
@@ -101,7 +106,8 @@
   }
 
   function onChat(ev: ChatEventPayload) {
-    if (!panes.includes(ev.pane)) return;
+    // A pane known to be gone or not a chat (its last lines, after it closed).
+    if (snap && !snap.panes.some((p) => p.id === ev.pane && p.chat)) return;
     let s = chats[ev.pane];
     if (!s) {
       chats[ev.pane] = { gen: ev.gen, model: createModel() };
@@ -254,6 +260,29 @@
     return short && i === n - 1 ? `span ${cols - short + 1}` : undefined;
   }
 
+  // Double-clicking a cell zooms it, and double-clicking it again splits the
+  // window back into cells (what ⤢ and ⤡ do). Not on a control (a button, a
+  // tab, the list, the checkbox), where a quick second click means something
+  // of its own. Text in the panel cannot be selected (the app turns selection
+  // off), so a double-click on it has no other meaning. Listened to on the
+  // grid, so one listener serves every cell.
+  let gridEl = $state<HTMLElement | null>(null);
+  $effect(() => {
+    const el = gridEl;
+    if (!el) return;
+    const onDblClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      const cell = target?.closest<HTMLElement>(".cell");
+      if (!cell || cells.length < 2) return;
+      if (target?.closest("button, input, label, select, textarea, a")) return;
+      const pane = cell.dataset.pane as PaneId | undefined;
+      if (!pane) return;
+      zoomed = zoomed === pane ? null : pane;
+    };
+    el.addEventListener("dblclick", onDblClick);
+    return () => el.removeEventListener("dblclick", onDblClick);
+  });
+
   function dock(pane: PaneId) {
     void filesPop(pane, false, null)
       .then(takeState)
@@ -292,6 +321,7 @@
   <div
     class:gone={cells.length === 0}
     class="grid"
+    bind:this={gridEl}
     style:--cols={cols}
     bind:clientWidth={boardW}
     bind:clientHeight={boardH}
@@ -329,7 +359,10 @@
               ? [
                   {
                     icon: zoomed === c.pane ? "⤡" : "⤢",
-                    title: zoomed === c.pane ? "다시 칸으로 나눠 보기" : "이 칸만 크게 보기",
+                    title:
+                      zoomed === c.pane
+                        ? "다시 칸으로 나눠 보기 (칸을 두 번 눌러도 됩니다)"
+                        : "이 칸만 크게 보기 (칸을 두 번 눌러도 됩니다)",
                     on: zoomed === c.pane,
                     run: () => (zoomed = zoomed === c.pane ? null : c.pane),
                   },

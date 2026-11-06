@@ -163,6 +163,23 @@ const theme = EditorView.theme({
     lineHeight: "1.5",
   },
   ".cm-content": { caretColor: "transparent", padding: "4px 0 40vh" },
+  // Room after the end of each line, so the editor can scroll the text being
+  // typed at a line's end clear of the edge (it follows one frame behind);
+  // on the line itself, so a line's colour still runs to the edge.
+  ".cm-line": { paddingRight: "96px" },
+  // The sideways bar stays in sight: WebKitGTK's own bars are overlays that
+  // show only while scrolling or hovered.
+  ".cm-scroller::-webkit-scrollbar": { width: "10px", height: "10px" },
+  ".cm-scroller::-webkit-scrollbar-thumb": {
+    backgroundColor: "color-mix(in srgb, var(--muted) 55%, transparent)",
+    border: "2px solid transparent",
+    borderRadius: "6px",
+    backgroundClip: "padding-box",
+  },
+  ".cm-scroller::-webkit-scrollbar-thumb:hover": { backgroundColor: "var(--muted)" },
+  ".cm-scroller::-webkit-scrollbar-track, .cm-scroller::-webkit-scrollbar-corner": {
+    backgroundColor: "color-mix(in srgb, var(--surface) 70%, transparent)",
+  },
   ".cm-gutters": {
     backgroundColor: "var(--surface)",
     color: "var(--muted)",
@@ -283,7 +300,8 @@ export function makeState(doc: string, lang: Extension | null = null): EditorSta
       EditorState.readOnly.of(true),
       EditorView.editable.of(false),
       EditorState.tabSize.of(4),
-      EditorView.lineWrapping,
+      // No wrapping: a long line runs on and the editor scrolls sideways
+      // (code reads as it is laid out), following the text being typed.
       theme,
       syntaxHighlighting(highlight),
       liveField,

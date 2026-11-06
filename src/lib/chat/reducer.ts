@@ -397,7 +397,20 @@ function applyStreamEvent(m: ChatModel, obj: Json) {
       if (at === undefined) return;
       const item = m.items[at];
       if (item.kind === "assistant" || item.kind === "thinking") item.streaming = false;
-      else if (item.kind === "tool") item.inputDone = true;
+      else if (item.kind === "tool") {
+        // Claude Code sends the message with the whole input just before this;
+        // should it come later, the input is taken from the stream meanwhile
+        // (a finished call with no input would look like an empty edit).
+        if (Object.keys(item.input).length === 0 && item.inputJson) {
+          try {
+            const v = JSON.parse(item.inputJson);
+            if (v && typeof v === "object" && !Array.isArray(v)) item.input = v as Record<string, unknown>;
+          } catch {
+            // Not whole after all: the message brings it.
+          }
+        }
+        item.inputDone = true;
+      }
       delete m.streamKeys[key];
       return;
     }

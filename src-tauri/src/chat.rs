@@ -513,6 +513,61 @@ pub fn chat_stop(
     engine.set_pane_chat(pane, false).map_err(err)
 }
 
+/// Close the chat and give its conversation back to the pane's terminal
+/// (src-tauri/src/handoff.rs): once the chat's Claude is gone, so that two
+/// processes never write one session, type `claude --resume <session>` at
+/// the shell. Only when the shell is at its prompt (nothing else in the
+/// foreground) and the session has a transcript. Returns whether it typed.
+#[tauri::command]
+pub async fn chat_handback(
+    engine: State<'_, Arc<Engine>>,
+    chats: State<'_, Arc<Chats>>,
+    pane: PaneId,
+    session: String,
+) -> Result<bool, String> {
+    let engine = Arc::clone(engine.inner());
+    let chats = Arc::clone(chats.inner());
+    tauri::async_runtime::spawn_blocking(move || hand_back(&engine, &chats, pane, &session))
+        .await
+        .map_err(err)?
+}
+
+fn hand_back(engine: &Engine, chats: &Chats, pane: PaneId, session: &str) -> Result<bool, String> {
+    let proc = chats.0.lock().ok().and_then(|mut map| map.remove(&pane));
+    let gone = proc.map_or(true, stop_and_wait);
+    engine.set_pane_chat(pane, false).map_err(err)?;
+    if !gone {
+        return Err("채팅의 Claude 가 끝나지 않아 터미널에서 다시 열지 않았습니다".into());
+    }
+    if !amux_core::session::claude_transcript_exists(session) {
+        return Ok(false);
+    }
+    let p = engine.pane(pane).map_err(err)?;
+    let shell = p.child_pid();
+    if shell.is_none() || p.shell_pid() != shell {
+        return Ok(false);
+    }
+    let line = format!("{}\r", amux_core::session::ResumePrefs::default().resume_command(session));
+    engine.write_pane(pane, line.as_bytes()).map_err(err)?;
+    Ok(true)
+}
+
+/// `begin_stop`, then wait for the process to end (SIGKILL after the same
+/// grace period as `shut_down`). True once it has.
+fn stop_and_wait(proc: ChatProc) -> bool {
+    begin_stop(&proc);
+    for i in 0..80 {
+        if proc.exited.load(Ordering::SeqCst) {
+            return true;
+        }
+        if i == 60 {
+            signal(proc.pid, true);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    proc.exited.load(Ordering::SeqCst)
+}
+
 /// Read side for stray callers: is a chat process alive in this pane?
 #[tauri::command]
 pub fn chat_running(chats: State<'_, Arc<Chats>>, pane: PaneId) -> Option<u64> {

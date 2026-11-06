@@ -29,6 +29,8 @@
   import { dockBack, popOut, popout } from "./popout.svelte";
   import { renderMarkdown } from "./markdown";
   import { clip, inputJson, seconds, shortPath, toolSummary } from "./format";
+  import { historyRows } from "./history";
+  import { stepDiff } from "./subagents";
 
   let {
     pane,
@@ -53,8 +55,13 @@
 
   // ---- the files panel (FilesPanel.svelte) ----
   let bodyWidth = $state(0);
-  /** Room for the conversation and the panel side by side. */
-  const wide = $derived(bodyWidth >= 860);
+  /** The panel's share of the width beside the conversation: files 3,
+   *  conversation 2 (until the person drags its edge). */
+  const PANEL_SHARE = 0.6;
+  /** The conversation keeps at least this much beside the panel. */
+  const MIN_CONVERSATION = 300;
+  /** Room for the conversation and the panel side by side, at 3:2. */
+  const wide = $derived(bodyWidth >= MIN_CONVERSATION / (1 - PANEL_SHARE));
   /** This chat's files panel is in the pop-out window (then not shown here). */
   const popped = $derived(popout.panes.includes(pane));
   const panelOpen = $derived(s?.panel === "open" && !popped);
@@ -73,14 +80,36 @@
   });
   const editedCount = $derived(m ? Object.keys(m.edits).length : 0);
   function setPanel(state: "open" | "closed") {
-    if (s) s.panel = state;
+    if (!s) return;
+    s.panel = state;
+    if (state === "closed" && m) s.holdSeq = m.userSeq;
   }
   // A file change started (an Edit/Write call, or a change seen on disk):
-  // show the panel by itself, if it fits beside the conversation and the
-  // user has not closed it.
+  // show the files by themselves. With the pop-out window open they go there,
+  // as a cell of their own (the window keeps every chat's calls, so the one
+  // being written is typed there from its start); else beside the
+  // conversation (over it, in a narrow pane). What the person did during this
+  // request (closed the panel, put it back from the pop-out) stands until
+  // their next message.
   function wantPanel() {
-    if (s && s.panel === "auto" && wide && !popped) s.panel = "open";
+    if (!s || !m || popped) return;
+    if (s.holdSeq === m.userSeq) return;
+    s.panel = "open";
+    if (popout.panes.length > 0) popOut(pane);
   }
+  // Put back from the pop-out window (its ↩, or the window closed): shown
+  // here, and kept here for the rest of this request.
+  let wasPopped = untrack(() => popped);
+  $effect(() => {
+    const now = popped;
+    untrack(() => {
+      if (wasPopped && !now && s && m) {
+        s.panel = "open";
+        s.holdSeq = m.userSeq;
+      }
+      wasPopped = now;
+    });
+  });
   /** Height of the bar under the conversation: an overlaid panel stops above it. */
   let bottomHeight = $state(0);
 
@@ -127,6 +156,9 @@
     return hit ? hit.value : cur;
   });
   const controlsLive = $derived(s?.gen != null && status !== "starting" && status !== "exited");
+
+  /** Long changes in the taken-over history the person opened in full. */
+  let historyOpen = $state<Record<number, boolean>>({});
 
   // ---- scrolling: follow the bottom unless the user scrolled up to read ----
   let scroller = $state<HTMLDivElement>();
@@ -431,7 +463,69 @@
       }}
     >
       <div class="list" bind:this={list}>
-        {#if m.items.length === 0}
+        {#if s?.history}
+          <!-- The conversation this chat took over from the terminal's Claude
+               (same session): drawn from its transcript, read-only. -->
+          {@const h = s.history}
+          {@const rows = historyRows(h.entries)}
+          <div class="history">
+            <div class="history-head">
+              터미널에서 하던 대화
+              {#if h.state === "loading"}<span class="muted">(불러오는 중…)</span>{/if}
+            </div>
+            {#if h.state === "error"}
+              <div class="muted small">이전 대화를 불러오지 못했습니다 ({h.error}). Claude 는 이 대화를 기억합니다.</div>
+            {/if}
+            {#if h.compacted}
+              <div class="muted small">그보다 앞의 대화는 Claude 가 요약해 두어서 여기에는 보이지 않습니다.</div>
+            {/if}
+            {#if h.omitted > 0}
+              <div class="muted small">앞의 {h.omitted}개 항목은 생략했습니다.</div>
+            {/if}
+            {#each rows as r, i (i)}
+              {#if r.kind === "user"}
+                <div class="user">{r.text}</div>
+              {:else if r.kind === "text"}
+                <div class="md" use:diagrams={true}>{@html renderMarkdown(r.text)}</div>
+              {:else if r.kind === "tool"}
+                {@const t = r.tool}
+                {@const diff = stepDiff(t)}
+                <div class="tool" class:err={t.err}>
+                  <div class="tool-head">
+                    <span class="tool-state">{#if !t.done}■{:else if t.err}✗{:else}✓{/if}</span>
+                    <span class="tool-name">{t.name || "도구"}</span>
+                    <span class="tool-sum">{toolSummary(t.name, t.input, cwd)}</span>
+                  </div>
+                  {#if diff && diff.length}
+                    {@const all = historyOpen[i] === true}
+                    <div class="hdiff">
+                      {#each all ? diff : diff.slice(0, 24) as l, j (j)}
+                        {#if l.kind === "gap"}
+                          <div class="hgap">⋯</div>
+                        {:else}
+                          <div class="hdl {l.kind}">
+                            <span class="hsign">{l.kind === "add" ? "+" : l.kind === "del" ? "-" : ""}</span><span
+                              class="htext">{l.text}</span>
+                          </div>
+                        {/if}
+                      {/each}
+                      {#if diff.length > 24}
+                        <button class="hmore" onclick={() => (historyOpen[i] = !all)}>
+                          {all ? "줄이기" : `${diff.length - 24}줄 더 보기`}
+                        </button>
+                      {/if}
+                    </div>
+                  {/if}
+                  {#if t.err && t.result}
+                    <pre class="result err">{clip(t.result, 2000)}</pre>
+                  {/if}
+                </div>
+              {/if}
+            {/each}
+            <div class="history-end">여기부터 채팅에서 이어집니다</div>
+          </div>
+        {/if}
+        {#if m.items.length === 0 && !s?.history}
           <div class="empty">
             <div class="empty-title">Claude 채팅</div>
             <div>터미널 대신 대화 화면으로 Claude Code 를 씁니다. 도구 실행은 줄로, 승인 요청과 질문은 카드로 보입니다.</div>
@@ -601,9 +695,9 @@
         overlay={covers}
         onwant={wantPanel}
         onclose={() => setPanel("closed")}
-        persistKey="chat"
-        defaultShare={0.56}
-        minRest={360}
+        persistKey="chat.v2"
+        defaultShare={PANEL_SHARE}
+        minRest={MIN_CONVERSATION}
         actions={[
           { icon: "⧉", title: "파일 창을 팝업 창으로 빼기 (여러 세션을 한 창에 모아 봅니다)", run: () => popOut(pane) },
         ]}
@@ -769,6 +863,82 @@
   }
   .small {
     font-size: 0.85em;
+  }
+  .history {
+    display: flex;
+    flex-direction: column;
+    gap: inherit;
+    opacity: 0.92;
+  }
+  .history-head,
+  .history-end {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 0.85em;
+  }
+  .history-head::after,
+  .history-end::before,
+  .history-end::after {
+    content: "";
+    flex: 1 1 auto;
+    border-top: 1px dashed var(--border-2);
+  }
+  .history .tool-head {
+    cursor: default;
+  }
+  .hdiff {
+    margin: 0 8px 6px 2em;
+    font-family: ui-monospace, "JetBrains Mono", "D2Coding", monospace;
+    font-size: 0.84em;
+    line-height: 1.4;
+    background: var(--surface-2);
+    border-radius: 4px;
+    overflow-x: auto;
+  }
+  .hdl {
+    display: grid;
+    grid-template-columns: 1.2em minmax(0, 1fr);
+    min-height: 1.4em;
+  }
+  .hdl.add {
+    background: color-mix(in srgb, var(--green) 15%, transparent);
+  }
+  .hdl.del {
+    background: color-mix(in srgb, var(--red) 15%, transparent);
+  }
+  .hsign {
+    text-align: center;
+    user-select: none;
+    color: var(--muted);
+  }
+  .hdl.add .hsign {
+    color: var(--green);
+  }
+  .hdl.del .hsign {
+    color: var(--red);
+  }
+  .htext {
+    white-space: pre-wrap;
+    word-break: break-all;
+    padding-right: 6px;
+  }
+  .hgap {
+    color: var(--muted);
+    text-align: center;
+    font-size: 0.85em;
+    border-top: 1px dashed var(--border);
+  }
+  .hmore {
+    display: block;
+    width: 100%;
+    font: inherit;
+    color: var(--info);
+    background: none;
+    border: none;
+    padding: 3px;
+    cursor: pointer;
   }
   .user {
     align-self: flex-end;
