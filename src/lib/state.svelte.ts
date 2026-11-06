@@ -18,6 +18,8 @@ import {
   type WorkspaceId,
   type WorkspaceInfo,
 } from "./ipc";
+import { focusChat, initChats, pruneChats } from "./chat/chat.svelte";
+import { initPopout } from "./chat/popout.svelte";
 
 export const app = $state<{ snapshot: Snapshot | null }>({ snapshot: null });
 
@@ -41,6 +43,8 @@ function trackStatus(snap: Snapshot) {
   for (const id of [...statusSince.keys()]) if (!seen.has(id)) statusSince.delete(id);
   // A closed pane's command log has no reader left; drop it with its timer.
   for (const id of Object.keys(paneCommands.log)) if (!seen.has(id)) delete paneCommands.log[id];
+  // Same for a closed pane's chat (the app already stopped its process).
+  pruneChats(seen);
 }
 
 // Each Terminal registers how to focus its xterm so that switching the
@@ -62,6 +66,9 @@ export function focusTerm(pane: PaneId | null | undefined) {
   // close confirmation or the conversation search must not pull the keyboard
   // out from under it. Both hand it back themselves when they close.
   if (closeConfirm.open || historySearch.open) return;
+  // A pane showing a structured chat takes the keyboard in its composer; the
+  // terminal under it is inert and could not take it anyway.
+  if (focusChat(pane)) return;
   if (pane) termFocus.get(pane)?.();
 }
 
@@ -80,6 +87,7 @@ export function registerComposerFocus(pane: PaneId, toggle: () => void): () => v
 
 /** Hop the keyboard between a pane's composer and its terminal. */
 export function toggleComposerFocus(pane: PaneId | null | undefined) {
+  if (focusChat(pane)) return;
   if (pane) composerFocus.get(pane)?.();
 }
 
@@ -122,6 +130,8 @@ let initialized = false;
 export async function initState() {
   if (initialized) return;
   initialized = true;
+  await initChats();
+  void initPopout();
   await listen<Snapshot>("state:snapshot", (event) => {
     const before = activeKey(app.snapshot);
     app.snapshot = event.payload;
@@ -212,6 +222,15 @@ export function activePane(): PaneId | null {
 
 export function paneInfo(id: PaneId): PaneInfo | null {
   return app.snapshot?.panes.find((p) => p.id === id) ?? null;
+}
+
+/** Whether a pane is on screen: its workspace and its tab are the shown ones
+ *  (every other one stays mounted under `display: none`). */
+export function paneOnScreen(id: PaneId): boolean {
+  const snap = app.snapshot;
+  const p = paneInfo(id);
+  if (!snap || !p || p.workspace !== snap.active_workspace) return false;
+  return snap.workspaces.find((w) => w.id === p.workspace)?.active_tab === p.tab;
 }
 
 /** Every pane in a split tree, left-to-right / top-to-bottom. */

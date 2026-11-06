@@ -869,6 +869,27 @@ impl Engine {
         Ok(())
     }
 
+    /// Switch a pane between its terminal and a structured Claude chat view.
+    /// Only the flag lives here; the chat process itself belongs to the app
+    /// layer. Leaving chat mode also hands the status back to the heuristic.
+    pub fn set_pane_chat(&self, id: PaneId, on: bool) -> Result<(), EngineError> {
+        let pane = self.pane(id)?;
+        if pane.chat.swap(on, Ordering::SeqCst) == on {
+            return Ok(());
+        }
+        if !on {
+            pane.hook_managed.store(false, Ordering::SeqCst);
+            pane.turn_active.store(false, Ordering::SeqCst);
+            *pane.waiting_since.lock() = None;
+            let mut status = pane.status.lock();
+            if !status.is_pinned() {
+                *status = PaneStatus::Idle;
+            }
+        }
+        self.notify_state_changed();
+        Ok(())
+    }
+
     pub fn write_pane(&self, id: PaneId, data: &[u8]) -> Result<(), EngineError> {
         self.pane(id)?.write_input(data).map_err(EngineError::Other)
     }
@@ -922,6 +943,7 @@ impl Engine {
                     status: *p.status.lock(),
                     exited: p.has_exited(),
                     claude_session: p.claude_session.lock().clone(),
+                    chat: p.chat.load(Ordering::SeqCst),
                 })
                 .collect(),
             active_workspace: ws.active,
@@ -1270,7 +1292,9 @@ impl Engine {
         let activity = *pane.activity.lock();
         let silent_for = activity.last_output.elapsed();
         let burst_len = activity.last_output.duration_since(activity.burst_start);
-        let app_running = {
+        // A chat pane's agent runs outside its shell (see `Pane::chat`), so
+        // the idle shell in the foreground must not read as "app exited".
+        let app_running = pane.chat.load(Ordering::SeqCst) || {
             let fg = pane.shell_pid();
             fg.is_some() && fg != pane.child_pid()
         };

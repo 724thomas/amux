@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import Sidebar from "./lib/Sidebar.svelte";
   import SplitNode from "./lib/SplitNode.svelte";
@@ -37,6 +37,7 @@
   import { handleKey } from "./lib/keymap";
   import { setSidebarWidth, settings } from "./lib/settings.svelte";
   import { themeById } from "./lib/themes";
+  import { sendLook } from "./lib/chat/popout.svelte";
 
   const snapshot = $derived(app.snapshot);
   const bcastCount = $derived(activeTabPaneCount());
@@ -119,6 +120,13 @@
       if (await confirmQuit()) await win.destroy();
     });
     return () => void unlisten.then((off) => off());
+  });
+
+  // An open files pop-out window follows the theme and the font size.
+  $effect(() => {
+    void settings.theme;
+    void settings.fontSize;
+    untrack(() => sendLook());
   });
 
   // Theme: app chrome colors live as CSS variables on :root.

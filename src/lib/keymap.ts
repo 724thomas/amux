@@ -25,6 +25,7 @@ import {
   wsCreate,
 } from "./state.svelte";
 import { adjustFontSize, resetFontSize } from "./settings.svelte";
+import { toggleChat } from "./chat/chat.svelte";
 
 /**
  * macOS에서는 복사·붙여넣기가 Ctrl이 아니라 Cmd(metaKey) 조합이다. 앱 단축키는
@@ -200,6 +201,10 @@ function dispatch(e: KeyboardEvent): boolean {
         return true;
       case "KeyA":
         dashboard.open = !dashboard.open;
+        return true;
+      case "KeyM":
+        // Structured Claude chat over the active pane, or back to its terminal.
+        toggleChat(activePane());
         return true;
     }
   }

@@ -2,6 +2,11 @@
   // One terminal pane: click-to-focus, focus ring, hover toolbar,
   // pane actions in the terminal's context menu, drag-rearrange.
   import Terminal from "./Terminal.svelte";
+  import ChatView from "./chat/ChatView.svelte";
+  import TermFiles from "./chat/TermFiles.svelte";
+  import { adoptChat, chatOf, chatOpen, openChat, toggleChat } from "./chat/chat.svelte";
+  import { setTermFiles, termFiles } from "./chat/termFiles.svelte";
+  import { dockBack, popout } from "./chat/popout.svelte";
   import {
     closePane,
     focusPane,
@@ -40,7 +45,34 @@
   type DropZone = "left" | "right" | "top" | "bottom";
   let dropZone = $state<DropZone | null>(null);
 
+  // Structured Claude chat over this pane's terminal (see chat/).
+  const chatOn = $derived(chatOpen(pane));
+  // The engine says this pane shows a chat that this page knows nothing
+  // about: the page was reloaded. Re-attach to (or clean up) that chat.
+  $effect(() => {
+    if (paneInfo(pane)?.chat && !chatOf(pane)) void adoptChat(pane);
+  });
+
+  // The files panel beside the terminal (CLI mode; the chat has its own).
+  const filesOn = $derived(termFiles.open[pane] === true);
+  /** The panel is in the pop-out window (then not shown here). */
+  const popped = $derived(popout.panes.includes(pane));
+  let rowWidth = $state(0);
+  /** Too narrow for terminal and panel side by side: the panel goes over it. */
+  const filesOver = $derived(rowWidth > 0 && rowWidth < 640);
+  /** 📂 and its palette entry: show or hide the panel beside the terminal.
+   *  While it is in the pop-out window, bring it back here instead (turning
+   *  the flag off then would leave ↩ in the pop-out with nothing to show). */
+  function toggleFiles() {
+    if (popped) {
+      setTermFiles(pane, true);
+      dockBack(pane);
+    } else setTermFiles(pane, !filesOn);
+  }
+
   const extraActions = [
+    { label: "Claude 채팅으로 열기 (Ctrl+Shift+M)", run: () => void openChat(pane) },
+    { label: "바뀐 파일 보기 (파일 패널)", run: toggleFiles },
     { label: "오른쪽으로 분할", run: () => void splitPane(pane, "horizontal") },
     { label: "아래로 분할", run: () => void splitPane(pane, "vertical") },
     // Closing the last pane in a tab closes the tab (and an empty workspace
@@ -93,7 +125,27 @@
   ondragleave={() => (dropZone = null)}
   ondrop={onDrop}
 >
-  <Terminal {pane} {focused} {extraActions} />
+  <!-- The terminal, and the files panel beside it when it is on. -->
+  <div class="pane-row" bind:clientWidth={rowWidth}>
+    <div class="term-wrap">
+      <!-- While the chat covers the terminal, `inert` keeps every focus path of
+           the terminal (click, shortcuts, the waiting-status hand-off) from
+           pulling the keyboard into a screen nobody can see. -->
+      <div class="term-layer" inert={chatOn}>
+        <Terminal {pane} {focused} {extraActions} />
+      </div>
+      <!-- Over the terminal part only, not over the panel's header. -->
+      {#if !chatOn}
+        {@render paneTools(false)}
+      {/if}
+    </div>
+    {#if filesOn && !chatOn && !popped}
+      <TermFiles {pane} overlay={filesOver} onclose={() => setTermFiles(pane, false)} />
+    {/if}
+  </div>
+  {#if chatOn}
+    <ChatView {pane} {focused} tools={paneTools} />
+  {/if}
   {#if pending}
     <span class="pending-dot" title="알림 대기 중"></span>
   {/if}
@@ -111,7 +163,13 @@
       </div>
     {/if}
   {/key}
-  <div class="toolbar">
+</section>
+
+<!-- Pane actions. Over a terminal they float at the top on hover; over a chat
+     they sit at the end of the chat's header instead (a floating bar would
+     cover the header the whole time the mouse is in the chat). -->
+{#snippet paneTools(inline: boolean)}
+  <div class="toolbar" class:inline>
     <button
       class="done-toggle"
       class:on={isDone}
@@ -137,6 +195,32 @@
       ⠿
     </button>
     <button
+      class="chat-toggle"
+      class:on={chatOn}
+      title={chatOn
+        ? "채팅 닫고 터미널로 (Ctrl+Shift+M)"
+        : "Claude 채팅으로 열기 (Ctrl+Shift+M)"}
+      onmousedown={(e) => e.preventDefault()}
+      onclick={() => toggleChat(pane)}
+    >
+      💬
+    </button>
+    {#if !inline}
+      <button
+        class="files-toggle"
+        class:on={filesOn || popped}
+        title={popped
+          ? "파일 창이 팝업 창에 있습니다 (누르면 다시 여기로)"
+          : filesOn
+            ? "파일 패널 닫기"
+            : "바뀐 파일을 옆에서 보기 (Claude 가 고친 파일이 열리고, 바뀐 줄이 입력되듯 재생됩니다)"}
+        onmousedown={(e) => e.preventDefault()}
+        onclick={toggleFiles}
+      >
+        {popped ? "⧉" : "📂"}
+      </button>
+    {/if}
+    <button
       title="오른쪽으로 분할 (Ctrl+Shift+D)"
       onmousedown={(e) => e.preventDefault()}
       onclick={() => void splitPane(pane, "horizontal")}
@@ -159,7 +243,7 @@
       ✕
     </button>
   </div>
-</section>
+{/snippet}
 
 <style>
   .pane {
@@ -174,6 +258,23 @@
   .pane.focused {
     outline: 1px solid var(--accent);
     z-index: 1;
+  }
+  .pane-row {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    /* A files panel lying over a narrow terminal starts below the pane's
+       floating toolbar, which would otherwise cover the panel's header. */
+    --files-top: 34px;
+  }
+  .term-wrap {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .term-layer {
+    position: absolute;
+    inset: 0;
   }
   .pane.ringing {
     animation: ring-pulse 0.75s ease-in-out 4;
@@ -357,6 +458,14 @@
   .pane:hover .toolbar {
     display: flex;
   }
+  .toolbar.inline {
+    position: static;
+    display: flex;
+    transform: none;
+    padding: 0;
+    background: none;
+    border: none;
+  }
   .toolbar button {
     width: 24px;
     height: 22px;
@@ -382,6 +491,11 @@
   }
   .toolbar button.done-toggle.on:hover {
     background: color-mix(in srgb, var(--done) 78%, var(--bg));
+  }
+  .toolbar button.files-toggle.on,
+  .toolbar button.chat-toggle.on {
+    background: var(--accent);
+    color: var(--bg);
   }
   .toolbar button.close:hover {
     background: var(--red);

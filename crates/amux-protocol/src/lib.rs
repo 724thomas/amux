@@ -150,6 +150,11 @@ pub struct PaneInfo {
     /// reporting it.
     #[serde(default)]
     pub claude_session: Option<String>,
+    /// The pane shows a structured Claude chat instead of its terminal. The
+    /// shell underneath keeps running untouched; this only says which view is
+    /// on screen and that a chat process owns the pane's agent status.
+    #[serde(default)]
+    pub chat: bool,
 }
 
 /// One tab: a named screen holding its own split tree. Exactly one tab per

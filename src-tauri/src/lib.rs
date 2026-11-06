@@ -3,7 +3,10 @@ use std::sync::Arc;
 use amux_core::{Engine, EngineEvent};
 use tauri::{Emitter, Manager};
 
+mod chat;
 mod commands;
+mod popout;
+mod workdir;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -19,6 +22,8 @@ pub fn run() {
     // in memory: the autosave below starts writing as soon as the user opens a
     // workspace, and the restore offer has to survive that.
     let previous = commands::PreviousSession::new(amux_core::session::load());
+    // Structured Claude chats (`claude -p` stream-json children), one per pane.
+    let chats = Arc::new(chat::Chats::default());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -26,6 +31,8 @@ pub fn run() {
         .manage(Arc::clone(&engine))
         .manage(previous)
         .manage(commands::History::default())
+        .manage(Arc::clone(&chats))
+        .manage(popout::Popout::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_snapshot,
             commands::saved_session,
@@ -53,6 +60,18 @@ pub fn run() {
             commands::resize_pane,
             commands::close_pane,
             commands::pane_subscribe,
+            chat::chat_start,
+            chat::chat_write,
+            chat::chat_stop,
+            chat::chat_running,
+            workdir::work_root,
+            workdir::work_list,
+            workdir::work_status,
+            workdir::work_read,
+            workdir::work_head,
+            popout::files_pop,
+            popout::files_state,
+            popout::files_look,
         ])
         .setup(move |app| {
             engine.start_meta_sweeper();
@@ -84,6 +103,7 @@ pub fn run() {
             // Forward engine state changes to the webview as fresh snapshots.
             let handle = app.handle().clone();
             let engine = Arc::clone(&engine);
+            let chats = Arc::clone(&chats);
             tauri::async_runtime::spawn(async move {
                 let mut events = engine.subscribe();
                 // Dock icon badge = processed (finished, not yet seen) count.
@@ -101,11 +121,16 @@ pub fn run() {
                                 .count() as i64;
                             if processed != badge {
                                 badge = processed;
-                                if let Some(window) = handle.webview_windows().values().next() {
+                                if let Some(window) = handle.get_webview_window(popout::MAIN) {
                                     let _ = window
                                         .set_badge_count((processed > 0).then_some(processed));
                                 }
                             }
+                            // A chat dies with its pane (closed pane, tab or
+                            // workspace) instead of lingering as an orphan.
+                            let alive: std::collections::HashSet<_> =
+                                snapshot.panes.iter().map(|p| p.id).collect();
+                            chats.retain_panes(&alive);
                             let _ = handle.emit("state:snapshot", snapshot);
                         }
                         EngineEvent::PaneRing(pane) => {
@@ -117,10 +142,26 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
-            tauri::WindowEvent::Destroyed => {
-                window.state::<Arc<Engine>>().shutdown();
-            }
-            tauri::WindowEvent::Focused(focused) => {
+            // Only the main window's end is the app's end; the files pop-out
+            // window closing just puts its panels back (see popout.rs).
+            tauri::WindowEvent::Destroyed => match popout::on_destroyed(window.label()) {
+                popout::OnDestroyed::ShutDown => {
+                    // The pop-out cannot outlive the main window.
+                    if let Some(files) = window.app_handle().get_webview_window(popout::FILES) {
+                        let _ = files.destroy();
+                    }
+                    window.state::<Arc<chat::Chats>>().stop_all();
+                    window.state::<Arc<Engine>>().shutdown();
+                }
+                popout::OnDestroyed::PanelsBack => {
+                    let state = window.state::<popout::Popout>().clear_panes();
+                    popout::broadcast(window.app_handle(), &state);
+                }
+                popout::OnDestroyed::Nothing => {}
+            },
+            // The engine stays quiet about panes the user is looking at; only
+            // the main window shows panes.
+            tauri::WindowEvent::Focused(focused) if popout::tracks_focus(window.label()) => {
                 window.state::<Arc<Engine>>().set_window_focused(*focused);
             }
             _ => {}

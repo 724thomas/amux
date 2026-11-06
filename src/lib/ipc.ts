@@ -43,6 +43,8 @@ export interface PaneInfo {
   /** Id of the Claude Code conversation running here, reported by the hooks.
    *  Saved with the layout so a restore can bring the conversation back. */
   claude_session: string | null;
+  /** A structured Claude chat covers this pane's terminal (see chat/). */
+  chat?: boolean;
 }
 
 export type LayoutNode =
@@ -252,3 +254,98 @@ export function subscribePane(
   void invoke("pane_subscribe", { pane, channel });
   return channel;
 }
+
+// --- Structured Claude chat ----------------------------------------------------
+// The app runs `claude -p` with JSON lines on stdin/stdout per chat pane and
+// relays every line as a `chat:event`; see src-tauri/src/chat.rs.
+
+export interface ChatEventPayload {
+  pane: PaneId;
+  /** Which spawn of the pane's chat this belongs to (restarts get a new one). */
+  gen: number;
+  /** `line` = one JSON line from Claude, `stderr` = a log line, `exit` = gone. */
+  kind: "line" | "stderr" | "exit";
+  data: string;
+}
+
+export interface ChatStartOptions {
+  model?: string | null;
+  permissionMode?: string | null;
+  /** Conversation id to continue (`claude --resume`). */
+  resume?: string | null;
+}
+
+export const chatStart = (pane: PaneId, opts: ChatStartOptions = {}) =>
+  invoke<number>("chat_start", {
+    pane,
+    model: opts.model ?? null,
+    permissionMode: opts.permissionMode ?? null,
+    resume: opts.resume ?? null,
+  });
+
+export const chatWrite = (pane: PaneId, gen: number, line: string) =>
+  invoke<void>("chat_write", { pane, gen, line });
+
+export const chatStop = (pane: PaneId) => invoke<void>("chat_stop", { pane });
+
+/** Generation of the chat process running in `pane`, if any. */
+export const chatRunning = (pane: PaneId) => invoke<number | null>("chat_running", { pane });
+
+// ---- a chat's working folder (src-tauri/src/workdir.rs), all read-only ----
+
+export interface WorkRoot {
+  /** The git repository's top folder, or the chat's folder outside git. */
+  root: string;
+  git: boolean;
+  branch: string | null;
+}
+
+export interface WorkEntry {
+  name: string;
+  dir: boolean;
+}
+
+export type WorkChangeStatus = "modified" | "added" | "deleted" | "renamed" | "copied" | "new" | "conflict";
+
+export interface WorkChange {
+  /** Relative to the root, `/`-separated. */
+  path: string;
+  status: WorkChangeStatus;
+  from: string | null;
+  added: number | null;
+  removed: number | null;
+}
+
+export interface WorkFile {
+  kind: "text" | "binary" | "missing";
+  text: string;
+  truncated: boolean;
+  size: number;
+}
+
+export const workRoot = (cwd: string) => invoke<WorkRoot>("work_root", { cwd });
+/** One folder level; `rel` "" is the root. */
+export const workList = (root: string, rel: string, git: boolean) =>
+  invoke<WorkEntry[]>("work_list", { root, rel, git });
+export const workStatus = (root: string) => invoke<WorkChange[]>("work_status", { root });
+export const workRead = (root: string, rel: string) => invoke<WorkFile>("work_read", { root, rel });
+/** The file as of the last commit; `missing` when it is not in it. */
+export const workHead = (root: string, rel: string) => invoke<WorkFile>("work_head", { root, rel });
+
+// -- files pop-out window (src-tauri/src/popout.rs) --------------------------
+
+/** The main window's look, for the pop-out window to match. */
+export interface Look {
+  theme: string;
+  fontSize: number;
+}
+export interface PopoutState {
+  /** Panes whose files panel is in the pop-out window, in the order they came. */
+  panes: PaneId[];
+  look: Look | null;
+}
+/** Move a pane's files panel into the pop-out window (`out`) or back. */
+export const filesPop = (pane: PaneId, out: boolean, look: Look | null) =>
+  invoke<PopoutState>("files_pop", { pane, out, look });
+export const filesState = () => invoke<PopoutState>("files_state");
+export const filesLook = (look: Look) => invoke<void>("files_look", { look });

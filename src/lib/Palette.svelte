@@ -27,6 +27,7 @@
     wsCreate,
   } from "./state.svelte";
   import { settings, setTheme, toggleShowComposer } from "./settings.svelte";
+  import { chatOpen, toggleChat } from "./chat/chat.svelte";
   import { THEMES } from "./themes";
 
   type Kind = "action" | "workspace" | "tab" | "pane" | "theme";
@@ -86,6 +87,14 @@
       hint: (settings.showComposer ?? true) ? "켜짐" : "꺼짐",
       run: toggleShowComposer,
     });
+    if (ap) {
+      out.push({
+        kind: "action",
+        label: chatOpen(ap) ? "💬 채팅 닫고 터미널로" : "💬 Claude 채팅 열기",
+        detail: "이 pane 에서 Claude Code 를 대화 화면으로 (Ctrl+Shift+M)",
+        run: () => toggleChat(ap),
+      });
+    }
     const aws = activeWorkspace();
     const at = activeTab();
     if (aws) {

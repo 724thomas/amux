@@ -77,6 +77,12 @@ pub struct Pane {
     /// `PaneMeta`: the metadata sweeper rebuilds that struct wholesale from
     /// /proc every second and would wipe it.
     pub claude_session: Mutex<Option<String>>,
+    /// A structured Claude chat (a `claude -p` stream-json child the app
+    /// layer runs) has taken over this pane's view. Its shell stays idle, so
+    /// the status sweeper must treat the chat as the running app: otherwise
+    /// it sees "foreground is the shell" and resolves every hook-set
+    /// processing/waiting status straight back to idle.
+    pub chat: AtomicBool,
 }
 
 #[derive(Clone, Copy)]
@@ -171,6 +177,7 @@ impl Pane {
             turn_active: std::sync::atomic::AtomicBool::new(false),
             last_done_at: Mutex::new(None),
             claude_session: Mutex::new(None),
+            chat: AtomicBool::new(false),
         });
 
         // Reader thread: PTY → term state → tail buffer → sink.
