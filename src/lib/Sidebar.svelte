@@ -65,6 +65,7 @@
 
   let menu = $state<{ x: number; y: number; target: MenuTarget } | null>(null);
   let themeMenuOpen = $state(false);
+  let settingsOpen = $state(false);
   let renaming = $state<{ kind: "workspace" | "tab"; id: string } | null>(null);
   let renameValue = $state("");
   let draggedId = $state<WorkspaceId | null>(null);
@@ -203,6 +204,17 @@
   onclick={() => {
     menu = null;
     themeMenuOpen = false;
+    settingsOpen = false;
+  }}
+  onkeydowncapture={(e) => {
+    // Captured, and kept from the terminal or chat that has the keyboard:
+    // closing the panel must not also interrupt the Claude in there.
+    if (e.key === "Escape" && settingsOpen) {
+      e.preventDefault();
+      e.stopPropagation();
+      settingsOpen = false;
+      themeMenuOpen = false;
+    }
   }}
 />
 
@@ -389,94 +401,112 @@
     </ul>
   </div>
 
-  <div class="theme-control" title="색 테마">
-    <span class="font-label">테마</span>
-    <button
-      class="theme-btn"
-      onclick={(e) => {
-        e.stopPropagation();
-        themeMenuOpen = !themeMenuOpen;
-      }}
-    >
-      <span class="swatch" style="background: {themeById(settings.theme).term.background}"></span>
-      <span class="theme-name">{themeById(settings.theme).name}</span>
-      <span class="caret">▴</span>
-    </button>
-    {#if themeMenuOpen}
-      <div class="theme-menu">
-        {#each THEMES as t (t.id)}
-          <button
-            class:selected={t.id === settings.theme}
-            onclick={() => {
-              setTheme(t.id);
-              themeMenuOpen = false;
-            }}
-          >
-            <span class="swatch" style="background: {t.term.background}"></span>
-            {t.name}
+  <!-- One button for every setting: the panel opens above it, a click outside
+       or Esc closes it. -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div class="settings-control" onclick={(e) => e.stopPropagation()}>
+    {#if settingsOpen}
+      <div class="settings-panel" role="dialog" aria-label="설정">
+        <div class="settings-row theme-control" title="색 테마">
+          <span class="font-label">테마</span>
+          <button class="theme-btn" aria-expanded={themeMenuOpen} onclick={() => (themeMenuOpen = !themeMenuOpen)}>
+            <span class="swatch" style="background: {themeById(settings.theme).term.background}"></span>
+            <span class="theme-name">{themeById(settings.theme).name}</span>
+            <span class="caret">{themeMenuOpen ? "▴" : "▾"}</span>
           </button>
-        {/each}
+        </div>
+        {#if themeMenuOpen}
+          <div class="theme-menu">
+            {#each THEMES as t (t.id)}
+              <button
+                class:selected={t.id === settings.theme}
+                onclick={() => {
+                  setTheme(t.id);
+                  themeMenuOpen = false;
+                }}
+              >
+                <span class="swatch" style="background: {t.term.background}"></span>
+                {t.name}
+              </button>
+            {/each}
+          </div>
+        {/if}
+
+        <div class="settings-row font-control" title="글꼴 크기 (Ctrl+= / Ctrl+- / Ctrl+휠)">
+          <span class="font-label">글꼴 크기</span>
+          <button onclick={() => adjustFontSize(-1)}>−</button>
+          <span class="font-size">{settings.fontSize}px</span>
+          <button onclick={() => adjustFontSize(1)}>＋</button>
+        </div>
+
+        <!-- 직전 명령 표시: 각 pane 맨 위에 마지막으로 보낸 명령을 가로 전체 한 줄 띠로 표시. -->
+        <div class="settings-row toggle-control" title="각 pane 맨 위에 직전에 보낸 명령을 가로 전체 한 줄로 표시 (길면 끝을 … 로 자르고, 올려두면 전체가 보입니다). 그 띠를 클릭하면 그 pane에 보낸 명령이 최신순으로 모두 펼쳐지고(스크롤 가능), 다시 클릭하면 직전 명령 한 줄로 접힙니다.">
+          <span class="font-label">직전 명령 표시</span>
+          <button
+            class="switch"
+            class:on={settings.showLastInput}
+            role="switch"
+            aria-checked={settings.showLastInput}
+            aria-label="직전 명령 표시 토글"
+            onclick={toggleShowLastInput}
+          >
+            <span class="knob"></span>
+          </button>
+        </div>
+
+        <!-- 하단 고정 입력창: pane 아래에 프롬프트 작성칸을 붙여, 출력을
+             스크롤해 읽는 중에도 화면이 맨 아래로 튀지 않게 한다. -->
+        <div
+          class="settings-row toggle-control"
+          title="pane 아래에 프롬프트 입력칸 고정 (Ctrl+Shift+E 로 입력칸↔터미널 이동) — 여기 타이핑하면 터미널 스크롤이 움직이지 않습니다"
+        >
+          <span class="font-label">하단 입력창</span>
+          <button
+            class="switch"
+            class:on={settings.showComposer ?? true}
+            role="switch"
+            aria-checked={settings.showComposer ?? true}
+            aria-label="하단 입력창 토글"
+            onclick={toggleShowComposer}
+          >
+            <span class="knob"></span>
+          </button>
+        </div>
+
+        <!-- 기본 채팅 모드: 새 워크스페이스와 새 탭을 Claude 채팅 화면으로 연다. -->
+        <div
+          class="settings-row toggle-control"
+          title="켜면 새 워크스페이스와 새 탭이 Claude 채팅 화면으로 열립니다. 끄면 예전처럼 터미널(CLI)로 열립니다. 어느 쪽이든 Ctrl+Shift+M 으로 바꿀 수 있습니다."
+        >
+          <span class="font-label">기본 채팅 모드</span>
+          <button
+            class="switch"
+            class:on={settings.chatByDefault}
+            role="switch"
+            aria-checked={settings.chatByDefault}
+            aria-label="기본 채팅 모드 토글"
+            onclick={toggleChatByDefault}
+          >
+            <span class="knob"></span>
+          </button>
+        </div>
       </div>
     {/if}
-  </div>
-
-  <div class="font-control" title="글꼴 크기 (Ctrl+= / Ctrl+- / Ctrl+휠)">
-    <span class="font-label">Aa</span>
-    <button onclick={() => adjustFontSize(-1)}>−</button>
-    <span class="font-size">{settings.fontSize}px</span>
-    <button onclick={() => adjustFontSize(1)}>＋</button>
-  </div>
-
-  <!-- 직전 명령 표시 토글 (폰트 바로 아래) — 각 pane 맨 위에 마지막으로 보낸
-       명령을 가로 전체 한 줄 띠로 표시. -->
-  <div class="toggle-control" title="각 pane 맨 위에 직전에 보낸 명령을 가로 전체 한 줄로 표시 (길면 끝을 … 로 자르고, 올려두면 전체가 보입니다). 그 띠를 클릭하면 그 pane에 보낸 명령이 최신순으로 모두 펼쳐지고(스크롤 가능), 다시 클릭하면 직전 명령 한 줄로 접힙니다.">
-    <span class="font-label">직전 명령 표시</span>
     <button
-      class="switch"
-      class:on={settings.showLastInput}
-      role="switch"
-      aria-checked={settings.showLastInput}
-      aria-label="직전 명령 표시 토글"
-      onclick={toggleShowLastInput}
+      class="settings-btn"
+      class:open={settingsOpen}
+      aria-expanded={settingsOpen}
+      aria-label="설정"
+      title="설정 (테마, 글꼴 크기, 직전 명령 표시, 하단 입력창, 기본 채팅 모드)"
+      onclick={() => {
+        settingsOpen = !settingsOpen;
+        themeMenuOpen = false;
+      }}
     >
-      <span class="knob"></span>
-    </button>
-  </div>
-
-  <!-- 하단 고정 입력창 토글 — pane 아래에 프롬프트 작성칸을 붙여, 출력을
-       스크롤해 읽는 중에도 화면이 맨 아래로 튀지 않게 한다. -->
-  <div
-    class="toggle-control"
-    title="pane 아래에 프롬프트 입력칸 고정 (Ctrl+Shift+E 로 입력칸↔터미널 이동) — 여기 타이핑하면 터미널 스크롤이 움직이지 않습니다"
-  >
-    <span class="font-label">하단 입력창</span>
-    <button
-      class="switch"
-      class:on={settings.showComposer ?? true}
-      role="switch"
-      aria-checked={settings.showComposer ?? true}
-      aria-label="하단 입력창 토글"
-      onclick={toggleShowComposer}
-    >
-      <span class="knob"></span>
-    </button>
-  </div>
-
-  <!-- 기본 채팅 모드: 새 워크스페이스와 새 탭을 Claude 채팅 화면으로 연다. -->
-  <div
-    class="toggle-control"
-    title="켜면 새 워크스페이스와 새 탭이 Claude 채팅 화면으로 열립니다. 끄면 예전처럼 터미널(CLI)로 열립니다. 어느 쪽이든 Ctrl+Shift+M 으로 바꿀 수 있습니다."
-  >
-    <span class="font-label">기본 채팅 모드</span>
-    <button
-      class="switch"
-      class:on={settings.chatByDefault}
-      role="switch"
-      aria-checked={settings.chatByDefault}
-      aria-label="기본 채팅 모드 토글"
-      onclick={toggleChatByDefault}
-    >
-      <span class="knob"></span>
+      <span class="gear">⚙</span>
+      <span class="settings-label">설정</span>
+      <span class="caret">{settingsOpen ? "▾" : "▴"}</span>
     </button>
   </div>
 </nav>
@@ -809,15 +839,62 @@
   .add-input::placeholder {
     color: var(--muted);
   }
-  .theme-control {
+  .settings-control {
     position: relative;
+    flex-shrink: 0;
+    padding: 6px 8px 8px;
+    border-top: 1px solid var(--border);
+  }
+  .settings-btn {
+    width: 100%;
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 8px 10px 2px;
+    padding: 5px 8px;
+    font-size: 0.78rem;
+    color: var(--text-2);
+    background: var(--surface-3);
+    border: 1px solid var(--border-2);
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  .settings-btn:hover,
+  .settings-btn.open {
+    color: var(--text);
+    background: var(--border-2);
+  }
+  .settings-btn .gear {
+    font-size: 0.95rem;
+    line-height: 1;
+  }
+  .settings-label {
+    flex: 1;
+    text-align: left;
+  }
+  .settings-panel {
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: calc(100% - 2px);
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 0 6px;
+    max-height: 70vh;
+    overflow-y: auto;
+    background: var(--surface-2);
+    border: 1px solid var(--border-2);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  }
+  .settings-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
     font-size: 0.75rem;
     color: var(--muted);
-    border-top: 1px solid var(--border);
   }
   .theme-btn {
     flex: 1;
@@ -855,18 +932,16 @@
     flex-shrink: 0;
   }
   .theme-menu {
-    position: absolute;
-    left: 10px;
-    right: 10px;
-    bottom: calc(100% + 2px);
-    z-index: 1000;
     display: flex;
     flex-direction: column;
+    flex-shrink: 0;
+    margin: 0 10px 4px;
     padding: 0.25rem;
-    background: var(--surface-2);
+    max-height: 240px;
+    overflow-y: auto;
+    background: var(--surface);
     border: 1px solid var(--border-2);
     border-radius: 6px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
   }
   .theme-menu button {
     display: flex;
@@ -887,22 +962,6 @@
   .theme-menu button.selected {
     color: var(--accent);
     font-weight: 700;
-  }
-  .font-control {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 10px 6px;
-    font-size: 0.75rem;
-    color: var(--muted);
-  }
-  .toggle-control {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 0 10px 10px;
-    font-size: 0.75rem;
-    color: var(--muted);
   }
   .switch {
     position: relative;

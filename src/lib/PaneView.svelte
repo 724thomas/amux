@@ -17,7 +17,7 @@
     type PaneId,
     type SplitAxis,
   } from "./ipc";
-  import { activeTab, paneInfo, rings, broadcast } from "./state.svelte";
+  import { activeTab, paneInfo, rings, broadcast, shownStatus } from "./state.svelte";
 
   let { pane, focused }: { pane: PaneId; focused: boolean } = $props();
 
@@ -30,7 +30,12 @@
   // Done-Shockwave: when a pane finishes unseen (status → processed), fire a
   // one-shot radial burst to pull the eye to the agent that just shipped.
   // Bumping `burst` re-keys the effect element below, restarting the animation.
-  const status = $derived(paneInfo(pane)?.status);
+  // As shown everywhere: a turn that ended while its subagents still work is
+  // not "finished" yet, so no burst until they are done.
+  const status = $derived.by(() => {
+    const p = paneInfo(pane);
+    return p ? shownStatus(p) : undefined;
+  });
   // `done` is a pinned status, so it doubles as the toggle's own on/off state.
   const isDone = $derived(status === "done");
   let burst = $state(0);

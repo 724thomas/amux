@@ -273,6 +273,8 @@ export interface ChatStartOptions {
   permissionMode?: string | null;
   /** Conversation id to continue (`claude --resume`). */
   resume?: string | null;
+  /** `claude --effort` (low, medium, high, xhigh, max); null: Claude's own. */
+  effort?: string | null;
 }
 
 export const chatStart = (pane: PaneId, opts: ChatStartOptions = {}) =>
@@ -281,6 +283,7 @@ export const chatStart = (pane: PaneId, opts: ChatStartOptions = {}) =>
     model: opts.model ?? null,
     permissionMode: opts.permissionMode ?? null,
     resume: opts.resume ?? null,
+    effort: opts.effort ?? null,
   });
 
 export const chatWrite = (pane: PaneId, gen: number, line: string) =>

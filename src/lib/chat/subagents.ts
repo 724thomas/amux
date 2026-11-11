@@ -23,6 +23,9 @@ export interface SubAgent {
   id: string;
   /** Its card's number in the pane ("서브 1", "서브 2", ...). */
   no: number;
+  /** The Agent call that sent it off (its meta's `toolUseId`): the same
+   *  subagent in the chat's stream, and its files panel. */
+  toolUseId: string | null;
   type: string | null;
   description: string | null;
   createdMs: number;
@@ -48,6 +51,7 @@ export function newAgent(f: AgentFile, no: number): SubAgent {
   return {
     id: f.id,
     no,
+    toolUseId: f.tool_use_id,
     type: f.agent_type,
     description: f.description,
     createdMs: f.created_ms,

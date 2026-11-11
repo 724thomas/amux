@@ -971,8 +971,11 @@ impl Engine {
                 cwd: pane.meta.lock().cwd.clone(),
                 claude_session: pane.claude_session.lock().clone(),
                 chat: pane.chat.load(Ordering::SeqCst),
+                // The pin is the user's mark; any other status is live state
+                // that the restored pane re-derives by itself.
+                done: pane.status.lock().is_pinned(),
             },
-            None => SavedLayout::Leaf { cwd: None, claude_session: None, chat: false },
+            None => SavedLayout::Leaf { cwd: None, claude_session: None, chat: false, done: false },
         };
         SavedSession {
             version: session::FORMAT_VERSION,
@@ -1157,7 +1160,7 @@ impl Engine {
         out: &mut Respawn,
     ) -> Result<LayoutNode, EngineError> {
         match node {
-            SavedLayout::Leaf { cwd, claude_session, chat } => {
+            SavedLayout::Leaf { cwd, claude_session, chat, done } => {
                 // A directory that has since been deleted or renamed must not
                 // sink the restore: drop it and let the shell start at $HOME.
                 let cwd = cwd
@@ -1188,6 +1191,11 @@ impl Engine {
                 }
                 if *chat {
                     pane.chat.store(true, Ordering::SeqCst);
+                }
+                // Pinned before anything runs in it: the resumed Claude's hooks
+                // (SessionStart's idle and the rest) no-op on a pinned pane.
+                if *done {
+                    *pane.status.lock() = PaneStatus::Done;
                 }
                 Ok(LayoutNode::Leaf { pane: pane.id })
             }
@@ -1729,7 +1737,7 @@ mod tests {
                 name: "복구된 것".into(),
                 tabs: vec![SavedTab {
                     name: "탭 1".into(),
-                    layout: SavedLayout::Leaf { cwd: None, claude_session: None, chat: false },
+                    layout: SavedLayout::Leaf { cwd: None, claude_session: None, chat: false, done: false },
                     active_pane: 0,
                 }],
                 active_tab: 0,
@@ -1825,6 +1833,41 @@ mod tests {
         again.shutdown();
     }
 
+    /// A pane the user pinned `done` stays pinned across a restart, and the
+    /// resumed Claude's first hooks (SessionStart's `idle`, a `progress`) do
+    /// not lift the pin. Only the pin is kept: other statuses are live state.
+    #[test]
+    fn a_pinned_done_pane_is_saved_and_restored_pinned() {
+        let engine = Engine::new();
+        let (_ws, _tab, left) = engine
+            .create_workspace(Some("검토".into()), Some("탭".into()), None, 80, 24)
+            .unwrap();
+        let right = engine.split_pane(left, SplitAxis::Horizontal, 80, 24).unwrap();
+        engine.set_pane_done(left, true).unwrap();
+        engine.notify_pane(right, NotifyKind::Progress, None, None);
+        let saved = engine.session_snapshot();
+        match &saved.workspaces[0].tabs[0].layout {
+            SavedLayout::Split { first, second, .. } => {
+                assert!(matches!(&**first, SavedLayout::Leaf { done: true, .. }), "{first:?}");
+                assert!(matches!(&**second, SavedLayout::Leaf { done: false, .. }), "processing is not saved: {second:?}");
+            }
+            other => panic!("expected a split, got {other:?}"),
+        }
+        engine.shutdown();
+
+        let again = Engine::new();
+        assert_eq!(again.restore_session(&saved, 80, 24, &ResumePrefs::default()).unwrap(), 1);
+        let ids: Vec<PaneId> = again.snapshot().panes.iter().map(|p| p.id).collect();
+        for id in &ids {
+            again.notify_pane(*id, NotifyKind::Idle, None, None);
+            again.notify_pane(*id, NotifyKind::Progress, None, None);
+        }
+        let mut statuses: Vec<PaneStatus> = again.snapshot().panes.iter().map(|p| p.status).collect();
+        statuses.sort_by_key(|s| format!("{s:?}"));
+        assert_eq!(statuses, vec![PaneStatus::Done, PaneStatus::Processing], "the pin survives, the other pane is live");
+        again.shutdown();
+    }
+
     /// A conversation Claude can no longer find must be dropped silently. If it
     /// were not, the restored pane would greet the user with a resume error
     /// where they expected their agent — and, worse, the same rejection is what
@@ -1844,6 +1887,7 @@ mod tests {
                         // No such transcript, so nothing may be typed.
                         claude_session: Some("00000000-0000-4000-8000-000000000000".into()),
                         chat: false,
+                        done: false,
                     },
                     active_pane: 0,
                 }],

@@ -27,6 +27,7 @@ import { paneInfo } from "../state.svelte";
 import { subs } from "./subagentColumn.svelte";
 import { lastTermOf } from "./subagentLinks.svelte";
 import { running } from "./subagents";
+import { initSubPanels } from "./subPanels.svelte";
 import {
   applyExit,
   applyLine,
@@ -39,7 +40,9 @@ import {
   noteSendFailed,
   noteUserSent,
   pushNotice,
+  editedElsewhere,
   type ChatModel,
+  type FileFeed,
 } from "./reducer";
 
 export interface ChatSession {
@@ -70,6 +73,9 @@ export interface ChatSession {
   /** The conversation so far, drawn above the chat's own turns, when the
    *  chat picked up a terminal Claude's session (null: none). */
   history: ChatHistory | null;
+  /** The effort the person picked here, given to every (re)start as
+   *  `--effort` so a restart keeps it. null: Claude's own setting. */
+  effortPick: string | null;
 }
 
 export interface ChatHistory {
@@ -95,6 +101,7 @@ function newSession(model: ChatModel = createModel()): ChatSession {
     tookOver: false,
     closedAt: 0,
     history: null,
+    effortPick: null,
   };
 }
 
@@ -116,6 +123,15 @@ export const chats = $state<{ byPane: Record<PaneId, ChatSession> }>({ byPane: {
 
 export function chatOf(pane: PaneId | null | undefined): ChatSession | undefined {
   return pane ? chats.byPane[pane] : undefined;
+}
+
+/** When the chats other than the one feeding `feed` last touched each file:
+ *  a files panel takes those changes quietly (see FilesPanel `elsewhere`). */
+export function editedBesides(feed: FileFeed): Record<string, number> {
+  return editedElsewhere(
+    Object.values(chats.byPane).map((s) => s.model),
+    feed,
+  );
 }
 
 export function chatOpen(pane: PaneId | null | undefined): boolean {
@@ -151,6 +167,7 @@ let listening: Promise<unknown> | null = null;
 
 /** Start listening for chat output. Idempotent; called once at app start. */
 export function initChats() {
+  initSubPanels();
   listening ??= listen<ChatEventPayload>("chat:event", (e) => {
     const ev = e.payload;
     const s = chats.byPane[ev.pane];
@@ -242,6 +259,7 @@ function startProcess(pane: PaneId, resume: string | null): Promise<void> {
         resume,
         model: s.model.model,
         permissionMode: flagMode(s.model.permissionMode),
+        effort: s.effortPick,
       });
       s.gen = gen;
       s.startedMs = startedMs;
@@ -255,8 +273,10 @@ function startProcess(pane: PaneId, resume: string | null): Promise<void> {
         return;
       }
       for (const ev of buf) if (ev.gen === gen && s.gen === gen) handle(s, ev);
-      // The handshake fills the model picker (no model call, nothing billed).
+      // The handshake fills the model picker, and the settings tell the
+      // effort in use (no model call, nothing billed).
       if (s.gen === gen) await control(pane, { subtype: "initialize" });
+      if (s.gen === gen) await control(pane, { subtype: "get_settings" });
     } catch (e) {
       early.delete(pane);
       s.model.status = "exited";
@@ -350,10 +370,12 @@ function takeOver(pane: PaneId, session: string, ended: boolean) {
     model.model = old.model.model;
     model.permissionMode = old.model.permissionMode;
     model.models = old.model.models;
+    model.commands = old.model.commands;
   }
   model.sessionId = session;
   chats.byPane[pane] = {
     ...newSession(model),
+    effortPick: old?.effortPick ?? null,
     draft: old?.draft ?? "",
     panel: old?.panel ?? "auto",
     closedAt: old?.closedAt ?? 0,
@@ -422,7 +444,7 @@ export function toggleChat(pane: PaneId | null | undefined) {
 export async function newConversation(pane: PaneId) {
   const s = chats.byPane[pane];
   if (!s) return openChat(pane);
-  const keep = { model: s.model.model, permissionMode: s.model.permissionMode, models: s.model.models };
+  const keep = { model: s.model.model, permissionMode: s.model.permissionMode, models: s.model.models, commands: s.model.commands };
   try {
     await chatStop(pane);
   } catch {
@@ -432,6 +454,7 @@ export async function newConversation(pane: PaneId) {
   fresh.model = keep.model;
   fresh.permissionMode = keep.permissionMode;
   fresh.models = keep.models;
+  fresh.commands = keep.commands;
   s.model = fresh;
   s.gen = null;
   s.open = true;
@@ -456,11 +479,13 @@ async function write(pane: PaneId, obj: unknown): Promise<void> {
   await chatWrite(pane, s.gen, JSON.stringify(obj));
 }
 
-async function control(pane: PaneId, request: { subtype: string } & Record<string, unknown>) {
+/** `note`: what the answer should be read as, when the subtype alone does not
+ *  say (it is kept with the request id until the answer comes). */
+async function control(pane: PaneId, request: { subtype: string } & Record<string, unknown>, note?: string) {
   const s = chats.byPane[pane];
   if (!s) return false;
   const id = requestId(request.subtype);
-  noteControlSent(s.model, id, request.subtype);
+  noteControlSent(s.model, id, note ?? request.subtype);
   try {
     await write(pane, { type: "control_request", request_id: id, request });
     return true;
@@ -543,6 +568,36 @@ export function setModel(pane: PaneId, model: string) {
 
 export function setPermissionMode(pane: PaneId, mode: string) {
   void control(pane, { subtype: "set_permission_mode", mode });
+}
+
+/** Effort levels a running chat changes live; `max` is a start flag only
+ *  (Claude ignores it as a setting, checked against claude 2.1.319). */
+const LIVE_EFFORT = new Set(["low", "medium", "high", "xhigh"]);
+
+/** Change how hard Claude thinks, from its next answer on. low..xhigh go to
+ *  the running process (`apply_flag_settings`); `max` restarts it on the same
+ *  conversation with `--effort max`, which only happens between turns. The
+ *  pick is kept for later restarts either way, and the picker shows what
+ *  Claude reports back (`get_settings`), not what was asked. */
+export async function setEffort(pane: PaneId, level: string) {
+  const s = chats.byPane[pane];
+  if (!s || s.gen === null || level === s.model.effort) return;
+  if (LIVE_EFFORT.has(level)) {
+    s.effortPick = level;
+    // Its success answer sets the picker (see the `effort:` note in the reducer).
+    await control(pane, { subtype: "apply_flag_settings", settings: { effortLevel: level } }, `effort:${level}`);
+    return;
+  }
+  if (level !== "max") return;
+  const m = s.model;
+  if (m.status !== "idle" || m.pendingTurns > 0) {
+    pushNotice(m, "info", "max 는 Claude 를 다시 시작해야 적용됩니다. 지금 차례가 끝난 뒤 다시 골라 주세요.");
+    return;
+  }
+  s.effortPick = level;
+  // Same conversation, new process: chat_start ends the old one, whose late
+  // lines carry the old generation and are dropped.
+  await startProcess(pane, m.sessionId);
 }
 
 /** Drop the chats of panes that no longer exist (the processes are already

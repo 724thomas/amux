@@ -75,8 +75,18 @@ When you answer a question (how something works, how code or a system is structu
 Mermaid tips: in flowcharts, wrap node and edge labels in double quotes, e.g. A["EMS-backend (rfp/clean)"] and A -->|"calls"| B, so spaces, parentheses, slashes and Korean text parse. In sequence diagrams, write participant names and message text without quotes (quotes would show up literally). Use <br/> for a line break inside a label, keep labels short, and do not put Markdown inside labels.
 SVG rules: one self-contained <svg> element with a viewBox, drawn for a white background with dark text; no scripts, no foreignObject, no external images or fonts."#;
 
+/// The effort levels `claude --effort` takes. Only these reach the command
+/// line. A running chat changes low..xhigh live (`apply_flag_settings`), but
+/// `max` only as a start flag, so picking it restarts the chat.
+const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
 /// The `claude` command line of a chat.
-fn chat_args(model: Option<&str>, permission_mode: Option<&str>, resume: Option<&str>) -> Vec<String> {
+fn chat_args(
+    model: Option<&str>,
+    permission_mode: Option<&str>,
+    resume: Option<&str>,
+    effort: Option<&str>,
+) -> Vec<String> {
     let mut args: Vec<String> = [
         "-p",
         "--input-format",
@@ -104,6 +114,7 @@ fn chat_args(model: Option<&str>, permission_mode: Option<&str>, resume: Option<
     flag("--model", model);
     flag("--permission-mode", permission_mode);
     flag("--resume", resume);
+    flag("--effort", effort.filter(|e| EFFORT_LEVELS.contains(e)));
     args
 }
 
@@ -320,6 +331,7 @@ pub fn chat_start(
     model: Option<String>,
     permission_mode: Option<String>,
     resume: Option<String>,
+    effort: Option<String>,
 ) -> Result<u64, String> {
     let engine = engine.inner();
     let chats = chats.inner();
@@ -339,7 +351,7 @@ pub fn chat_start(
         .or_else(|| std::env::var_os("HOME").map(PathBuf::from));
 
     let mut cmd = Command::new(&claude);
-    cmd.args(chat_args(model.as_deref(), permission_mode.as_deref(), resume.as_deref()));
+    cmd.args(chat_args(model.as_deref(), permission_mode.as_deref(), resume.as_deref(), effort.as_deref()));
     if let Some(cwd) = &cwd {
         cmd.current_dir(cwd);
     }
@@ -591,7 +603,7 @@ mod tests {
     fn real_cli_answers_initialize() {
         let claude = find_claude().expect("claude on this machine");
         let mut cmd = Command::new(claude);
-        cmd.args(chat_args(None, None, None)).arg("--no-session-persistence");
+        cmd.args(chat_args(None, None, None, None)).arg("--no-session-persistence");
         for key in SESSION_IDENTITY_ENV {
             cmd.env_remove(key);
         }
@@ -638,12 +650,15 @@ mod tests {
 
     #[test]
     fn argv_tells_claude_about_diagrams_and_passes_options() {
-        let args = chat_args(Some("opus"), Some("manual"), Some(""));
+        let args = chat_args(Some("opus"), Some("manual"), Some(""), Some("max"));
         let at = args.iter().position(|a| a == "--append-system-prompt").unwrap();
         assert!(args[at + 1].contains("```mermaid"));
         assert!(args.windows(2).any(|w| w[0] == "--model" && w[1] == "opus"));
         assert!(args.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "manual"));
         assert!(!args.iter().any(|a| a == "--resume"), "empty resume adds no flag");
+        assert!(args.windows(2).any(|w| w[0] == "--effort" && w[1] == "max"));
+        let odd = chat_args(None, None, None, Some("--dangerously-skip-permissions"));
+        assert!(!odd.iter().any(|a| a == "--effort" || a.starts_with("--dangerously")), "only known levels pass");
     }
 
     #[test]

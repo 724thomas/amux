@@ -1,3 +1,22 @@
+<script module lang="ts">
+  import { workStatus, type WorkChange } from "../ipc";
+
+  /** The last ask of git for a folder's changed files, by folder, shared by
+   *  the panels of this window (the pop-out window holds a cell per
+   *  subagent, all on the same folder). */
+  const lastStatus = new Map<string, { at: number; list: Promise<WorkChange[] | null> }>();
+
+  /** git's changed files under `root`. An answer any panel asked for at most
+   *  `maxAgeMs` ago is taken as it is; 0 always asks git. */
+  function statusOf(root: string, maxAgeMs: number): Promise<WorkChange[] | null> {
+    const hit = lastStatus.get(root);
+    if (hit && maxAgeMs > 0 && Date.now() - hit.at <= maxAgeMs) return hit.list;
+    const list = workStatus(root).catch(() => null);
+    lastStatus.set(root, { at: Date.now(), list });
+    return list;
+  }
+</script>
+
 <script lang="ts">
   // The files panel: a read-only code editor next to the conversation that
   // shows Claude's file changes while they happen.
@@ -16,6 +35,7 @@
   // The panel stays mounted while hidden, so it sees changes before it is
   // shown, and asks to be shown (`onwant`) when one starts.
   import { onDestroy, tick, untrack } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
   import { EditorView } from "@codemirror/view";
   import type { EditorState, TransactionSpec } from "@codemirror/state";
   import {
@@ -23,8 +43,6 @@
     workList,
     workRead,
     workRoot,
-    workStatus,
-    type WorkChange,
     type WorkChangeStatus,
     type WorkEntry,
     type WorkRoot,
@@ -61,6 +79,9 @@
     label = "",
     actions = [],
     closable = true,
+    sub = false,
+    leaveSubChanges = false,
+    elsewhere,
   }: {
     model: FileFeed;
     cwd: string | null;
@@ -85,6 +106,21 @@
     actions?: { icon: string; title: string; run: () => void; on?: boolean }[];
     /** Show the ✕ that closes the panel. */
     closable?: boolean;
+    /** A subagent's own panel (a cell in the pop-out window). It types only
+     *  its subagent's calls, at three times the first speed (others 1.5),
+     *  and calls that arrived within RECENT_MS are typed even if they are done
+     *  (its cell may open just after the change); changes seen on disk are not
+     *  played, its open tabs only follow them, looked at less often. */
+    sub?: boolean;
+    /** Leave the changes this conversation's subagents made to their own cells
+     *  (a conversation's cell in the pop-out window, where those cells are);
+     *  beside the conversation they are played here as any other change. */
+    leaveSubChanges?: boolean;
+    /** When the window's other conversations last touched each file
+     *  (`editedElsewhere`): a change of theirs is taken quietly here, not
+     *  played (their own panel shows it), so one session's work does not take
+     *  over another session's panel that has the same file. */
+    elsewhere?: () => Record<string, number>;
   } = $props();
 
   const BADGE: Record<WorkChangeStatus, [string, string]> = {
@@ -98,8 +134,11 @@
   };
   /** An editor's save-in-progress file (written, then renamed over the real one). */
   const TEMP_FILE = /\.tmp\.\d+\.[0-9a-f]+$/;
-  /** Drawing speed against the first version (the user asked for 1.5x). */
-  const SPEED = 1.5;
+  /** Drawing speed against the first version (the person asked for 1.5, and
+   *  for three times the first speed in a subagent's panel; fixed per panel). */
+  const SPEED = untrack(() => (sub ? 3 : 1.5));
+  /** A subagent's panel: calls this recent (ms) are typed even when done. */
+  const RECENT_MS = 15_000;
   /** Typing pace: at least `minRate` characters a second, and never more
    *  than about `lag` seconds behind the text that has arrived. */
   const LIVE = { minRate: 60 * SPEED, lag: 0.7 / SPEED };
@@ -129,6 +168,8 @@
         expanded = { "": true };
         changes = [];
         known.clear();
+        readAt.clear();
+        firstLookAt = 0;
         baselined = false;
         void refresh();
       })
@@ -267,19 +308,32 @@
   }
 
   /** Files whose disk content moved away from what we knew: play them back. */
+  /** Path → the count of subagent edits to it already taken (see detectChanges). */
+  const subSeen = new Map<string, number>();
+  /** Path → when this panel last read it (and when its first look was). */
+  const readAt = new Map<string, number>();
+  let firstLookAt = 0;
   async function detectChanges(r: WorkRoot, list: WorkChange[]) {
     const status = new Map(list.map((c) => [c.path, c]));
-    const rels = new Set<string>([...status.keys(), ...known.keys()]);
+    // A panel that plays nothing from disk (a subagent's) only keeps its open
+    // tabs current: it reads those, not every changed file of the folder.
+    const rels = new Set<string>(sub ? [] : [...status.keys(), ...known.keys()]);
     for (const t of tabs) if (t.rel) rels.add(t.rel);
     const first = !baselined;
+    // The first look takes the disk as it is, subagents' changes so far too.
+    if (first && leaveSubChanges) for (const [p, n] of Object.entries(model.subTouched ?? {})) subSeen.set(p, n);
     let replays = 0;
     for (const rel of [...rels].slice(0, 60)) {
       if (dead || root !== r) return;
       const abs = absOf(rel);
       if (busy.has(abs) || TEMP_FILE.test(rel)) continue;
       const st = status.get(rel);
+      const lookedAt = Date.now();
       const cur = await readText(r, rel);
+      const lastLook = readAt.get(abs) ?? firstLookAt;
+      readAt.set(abs, lookedAt);
       if (first) {
+        firstLookAt ||= lookedAt;
         known.set(rel, cur);
         noteOrigin(abs, cur);
         continue;
@@ -297,7 +351,30 @@
         origin.set(abs, cur);
         if (stateOf(abs)) updatePlus(abs);
       }
-      if (cur === null || cur === before) continue;
+      // A change one of this conversation's subagents made is typed in that
+      // subagent's own cell (`leaveSubChanges`); here an open tab just takes it. (Counted once
+      // the change is seen, so a later change of the same file plays.) A
+      // subagent's panel types only its own calls: other changes just keep
+      // its open tabs current.
+      const touched = leaveSubChanges ? model.subTouched?.[abs] : undefined;
+      if (cur === null || cur === before) {
+        // Taken in already (a look between the write and its result): seen.
+        if (touched !== undefined) subSeen.set(abs, touched);
+        continue;
+      }
+      const bySub = touched !== undefined && touched !== subSeen.get(abs);
+      if (bySub) subSeen.set(abs, touched);
+      // Another conversation of this window edited it since this panel last
+      // looked: theirs to show (in their panel); here the tab just takes it.
+      // Asked after the read, as its call may have come during this look.
+      const byOther = elsewhere !== undefined && (elsewhere()[abs] ?? 0) > lastLook;
+      if (bySub || byOther || sub) {
+        if (stateOf(abs) && docOf(abs) !== cur) {
+          setDoc(abs, cur);
+          updatePlus(abs);
+        }
+        continue;
+      }
       // If the file is open, what the user sees is the real "before".
       const from = stateOf(abs) ? docOf(abs) : before;
       if (from === null || from === cur) continue;
@@ -316,21 +393,28 @@
   // ---- refresh: never two at once; a request during one runs once after ----
   let inflight = false;
   let again = false;
+  let againFull = false;
   let lastRefresh = 0;
   let lastCost = 0;
-  async function refresh() {
+  /** `full`: ask git for the changed files too. A subagent's panel reads only
+   *  its open tabs, so after each of its changes it skips git (one git run per
+   *  cell per change adds up: eight subagents changing a file at once ran it
+   *  18 times); its change list then waits for the next timed look.
+   *  `maxAgeMs`: git's answer to another panel this recent will do. */
+  async function refresh(full = true, maxAgeMs = 0) {
     const r = root;
     if (!r || dead) return;
     if (inflight) {
       again = true;
+      againFull ||= full;
       return;
     }
     inflight = true;
     const started = performance.now();
     try {
       let list: WorkChange[] = changes;
-      if (r.git) {
-        const next = await workStatus(r.root).catch(() => null);
+      if (r.git && (full || !sub || !baselined)) {
+        const next = await statusOf(r.root, maxAgeMs);
         // Without git's answer we cannot tell old changes from new ones:
         // compare nothing this time (the first look would take a wrong baseline).
         if (!next || root !== r) return;
@@ -344,21 +428,30 @@
       await detectChanges(r, list);
     } finally {
       inflight = false;
-      lastRefresh = Date.now();
-      lastCost = performance.now() - started;
+      // Only a look that asked git counts for the timed looks (and its cost).
+      if (full || !sub) {
+        lastRefresh = Date.now();
+        lastCost = performance.now() - started;
+      }
       if (again) {
-        again = false;
-        void refresh();
+        const f = againFull;
+        again = againFull = false;
+        void refresh(f);
       }
     }
   }
 
   let timer: ReturnType<typeof setTimeout> | null = null;
-  function schedule(ms: number) {
+  let timerFull = false;
+  /** A look soon; a subagent's panel takes a quick one (no git) unless `full`. */
+  function schedule(ms: number, full = !sub) {
     if (timer) clearTimeout(timer);
+    timerFull ||= full;
     timer = setTimeout(() => {
       timer = null;
-      void refresh();
+      const f = timerFull;
+      timerFull = false;
+      void refresh(f);
     }, ms);
   }
   // A tool call finished (or a turn ended): something on disk may differ.
@@ -371,10 +464,14 @@
     if (!visible) return;
     const id = setInterval(() => {
       if (document.hidden) return;
-      const busyChat = model.status === "working" || model.status === "waiting";
+      // A subagent's panel looks after each of its own changes already; the
+      // disk only keeps its open tabs current, which can wait.
+      const busyChat = !sub && (model.status === "working" || model.status === "waiting");
       const gap = Math.max(busyChat ? 3000 : 15000, lastCost * 10);
       if (Date.now() - lastRefresh < gap) return;
-      void refresh();
+      // A subagent's cell takes the answer git gave its chat's cell (or
+      // another subagent's) since its last look, instead of asking again.
+      void refresh(true, sub ? gap : 0);
     }, 1000);
     return () => clearInterval(id);
   });
@@ -645,7 +742,10 @@
     | { kind: "edit" | "write"; path: string; row: ToolItem }
     | { kind: "replay"; path: string; before: string; after: string };
   const queue: Job[] = [];
-  const busy = new Set<string>();
+  /** Files being played. Reactive: the "live" marks (a breathing background,
+   *  repainted every frame) must go the moment a file's playback ends; with a
+   *  plain Set they stayed until the next change and kept the window drawing. */
+  const busy = new SvelteSet<string>();
   let running = false;
   let activity = $state<{ path: string; kind: Job["kind"]; text: string } | null>(null);
 
@@ -862,6 +962,23 @@
     }
   }
 
+  const count = (text: string, part: string) => text.split(part).length - 1;
+
+  /** A subagent's edit its cell sees already made (the cell opened after
+   *  the change): put `old` back so it can be typed. Only when that is plain:
+   *  the new text once, and the old text nowhere but inside it (an edit that
+   *  adds lines after the old ones keeps the old text). Not for replace_all,
+   *  as one place is typed. Returns the text before, or null if left alone. */
+  function undoEdit(path: string, row: ToolItem, old: string): string | null {
+    if (row.input.replace_all === true || (row.done && row.isError)) return null;
+    const neu = typeof row.input.new_string === "string" ? row.input.new_string : "";
+    if (!neu) return null;
+    const doc = docOf(path);
+    if (count(doc, neu) !== 1 || count(doc, old) !== count(neu, old)) return null;
+    setDoc(path, doc.replace(neu, () => old));
+    return doc;
+  }
+
   async function playEdit(path: string, row: ToolItem) {
     say(path, "edit", "바꿀 곳을 찾는 중");
     const old = await until(() => {
@@ -871,6 +988,9 @@
     });
     if (!old) return;
     if (docOf(path).indexOf(old) < 0 && partial.has(path)) setDoc(path, old);
+    // A subagent's call comes whole, and its cell may open only after the
+    // file took it: take the change back first, so it can be typed.
+    const undone = sub && row.inputDone ? undoEdit(path, row, old) : null;
     const doc = docOf(path);
     const at = doc.indexOf(old);
     const st = stateOf(path);
@@ -896,6 +1016,8 @@
     await waitForDecision(path, row, "edit");
     if (row.done && row.isError) {
       w.draw(oldRegion, null);
+      // Taken back above but not applied after all: show the file as it is.
+      if (undone !== null) setDoc(path, undone);
       say(path, "edit", "적용되지 않았습니다");
       return;
     }
@@ -904,6 +1026,10 @@
   }
 
   async function playWrite(path: string, row: ToolItem) {
+    // A subagent's Write: the main window reads the file just before it
+    // lands (`before`); give that read a moment, then start from it.
+    if (sub) for (let i = 0; i < 20 && row.before === undefined && !dead; i++) await sleep(15);
+    if (typeof row.before === "string" && docOf(path) !== row.before) setDoc(path, row.before);
     const existing = docOf(path);
     say(path, "write", existing ? "파일을 다시 쓰는 중" : "새 파일을 쓰는 중");
     const w = regionWriter(path, 0, existing, false);
@@ -936,12 +1062,16 @@
     say(path, "replay", "파일에 생긴 변경을 보여 줬습니다");
   }
 
-  /** The first of `m`'s file-changing calls that is still under way. */
+  /** The first of `m`'s file-changing calls that is still under way (or, with
+   *  in a subagent's panel, that arrived within RECENT_MS). */
   function firstOpenEdit(m: FileFeed): number {
+    const now = Date.now();
     for (let i = 0; i < m.editOrder.length; i++) {
       const at = m.toolIds[m.editOrder[i]];
       const row = at === undefined ? undefined : m.items[at];
-      if (row?.kind === "tool" && !row.done) return i;
+      if (row?.kind !== "tool") continue;
+      if (!row.done) return i;
+      if (sub && row.arrivedMs !== undefined && now - row.arrivedMs < RECENT_MS) return i;
     }
     return m.editOrder.length;
   }
@@ -955,6 +1085,8 @@
     untrack(() => {
       if (m !== seenModel) {
         seenModel = m;
+        // A new conversation (or process) counts its subagents' edits anew.
+        subSeen.clear();
         // A panel that starts on a conversation already under way (a cell of
         // the pop-out window coming out in the middle of a change, or coming
         // back): the files changed before get their tabs as they are on disk
@@ -975,7 +1107,10 @@
         if (!row || row.kind !== "tool" || !row.path) continue;
         if (row.name === "Edit") enqueue({ kind: "edit", path: row.path, row });
         else if (row.name === "Write") enqueue({ kind: "write", path: row.path, row });
-        // Other tools (NotebookEdit) are played back from disk afterwards.
+        // Other tools (NotebookEdit) are played back from disk afterwards; a
+        // panel that plays nothing from disk opens the file, which then
+        // follows the disk.
+        else if (sub) void ensureTab(row.path);
       }
       seenEdits = n;
     });
@@ -1039,7 +1174,7 @@
         <button
           class="node file"
           class:sel={active === abs}
-          class:editing={activity?.path === abs}
+          class:editing={activity?.path === abs && busy.has(abs)}
           style:padding-left="{depth * 12 + 22}px"
           onclick={() => openFile(abs)}
           title={child}

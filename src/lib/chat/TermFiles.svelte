@@ -8,6 +8,7 @@
   import FilesPanel from "./FilesPanel.svelte";
   import { emptyFeed, statusFeed } from "./statusFeed";
   import { popOut } from "./popout.svelte";
+  import { editedBesides } from "./chat.svelte";
   import type { PaneId } from "../ipc";
   import { focusTerm, paneInfo, paneOnScreen } from "../state.svelte";
 
@@ -62,6 +63,7 @@
     persistKey="term"
     defaultShare={0.5}
     minRest={300}
+    elsewhere={() => editedBesides(feed)}
     actions={[{ icon: "⧉", title: "파일 창을 팝업 창으로 빼기 (여러 세션을 한 창에 모아 봅니다)", run: () => popOut(pane) }]}
   />
 </div>

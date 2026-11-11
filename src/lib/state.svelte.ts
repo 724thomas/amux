@@ -20,6 +20,8 @@ import {
 } from "./ipc";
 import { focusChat, initChats, pruneChats } from "./chat/chat.svelte";
 import { initPopout } from "./chat/popout.svelte";
+import { subs } from "./chat/subagentColumn.svelte";
+import { running } from "./chat/subagents";
 
 export const app = $state<{ snapshot: Snapshot | null }>({ snapshot: null });
 
@@ -277,13 +279,41 @@ export function tabPanes(tab: TabInfo): PaneId[] {
 export const statusRank = (s: string): number =>
   s === "waiting" ? 0 : s === "processed" ? 1 : s === "processing" ? 2 : s === "idle" ? 3 : 4;
 
+/** No line from a subagent for this long and it no longer counts as working:
+ *  a guard against one that died without its meta saying so (in two weeks of
+ *  real ones, the longest silence of a subagent that went on to finish was
+ *  39 minutes, and none was left unmarked). */
+const SUBAGENT_SILENCE_MS = 60 * 60_000;
+
+/** A subagent of the Claude in this pane is still working, as its subagent
+ *  column sees it (the column looks at every pane, hidden tabs included). */
+export function subagentsWorking(pane: PaneId): boolean {
+  const agents = subs.byPane[pane]?.agents;
+  // The clock only while one is running: done cards (they stay until the next
+  // message) would otherwise redo every tab's status each second.
+  if (!agents?.some(running)) return false;
+  const now = clock.now;
+  return agents.some((a) => running(a) && now - a.modifiedMs < SUBAGENT_SILENCE_MS);
+}
+
+/** A pane's status as every list shows it. The engine only hears the main
+ *  conversation's hooks: when its turn ends while subagents it sent off are
+ *  still working, it reads idle or processed there, yet Claude is waiting on
+ *  them, so it is working. Waiting (needs the person) and DONE (pinned by
+ *  the person) stay as they are. */
+export function shownStatus(p: PaneInfo): PaneInfo["status"] {
+  if ((p.status === "idle" || p.status === "processed") && subagentsWorking(p.id)) return "processing";
+  return p.status;
+}
+
 /** The most attention-hungry status among a tab's live panes — the tab's chip. */
 export function tabStatus(tab: TabInfo): PaneInfo["status"] | null {
   const ids = new Set(tabPanes(tab));
   let best: PaneInfo["status"] | null = null;
   for (const p of app.snapshot?.panes ?? []) {
     if (p.exited || !ids.has(p.id)) continue;
-    if (best === null || statusRank(p.status) < statusRank(best)) best = p.status;
+    const s = shownStatus(p);
+    if (best === null || statusRank(s) < statusRank(best)) best = s;
   }
   return best;
 }
@@ -376,7 +406,10 @@ export function answerClose(ok: boolean) {
 function closeDetail(panes: PaneId[]): string {
   const ids = new Set(panes);
   const live = (app.snapshot?.panes ?? []).filter((p) => ids.has(p.id) && !p.exited);
-  const busy = live.filter((p) => p.status === "processing" || p.status === "waiting").length;
+  const busy = live.filter((p) => {
+    const s = shownStatus(p);
+    return s === "processing" || s === "waiting";
+  }).length;
   const base = `터미널 ${live.length}개가 모두 종료됩니다.`;
   return busy > 0
     ? `${base} 그중 ${busy}개는 에이전트가 작업 중이거나 입력을 기다리고 있습니다.`
@@ -438,7 +471,7 @@ export function dashboardAgents(): AgentTile[] {
       name: paneLabel(p.id),
       workspace: ws?.name ?? "",
       workspaceId: p.workspace,
-      status: p.status,
+      status: shownStatus(p),
       since: statusSince.get(p.id)?.since ?? clock.now,
       branch: p.meta.git_branch ?? null,
       cwd: p.meta.cwd ?? null,
@@ -464,11 +497,12 @@ export function statusCounts(): {
   for (const p of snap.panes) {
     if (p.exited) continue;
     c.total++;
-    if (p.status === "processing") c.processing++;
-    else if (p.status === "waiting") c.waiting++;
-    else if (p.status === "processed") c.processed++;
-    else if (p.status === "idle") c.idle++;
-    else if (p.status === "done") c.done++;
+    const s = shownStatus(p);
+    if (s === "processing") c.processing++;
+    else if (s === "waiting") c.waiting++;
+    else if (s === "processed") c.processed++;
+    else if (s === "idle") c.idle++;
+    else if (s === "done") c.done++;
   }
   return c;
 }
@@ -489,13 +523,15 @@ export function attentionItems(): AttentionItem[] {
   const out: AttentionItem[] = [];
   for (const p of snap.panes) {
     if (p.exited) continue;
-    if (p.status === "waiting" || p.status === "processed") {
+    // Its turn ended but subagents still work: not finished, not listed.
+    const s = shownStatus(p);
+    if (s === "waiting" || s === "processed") {
       const wsName = snap.workspaces.find((w) => w.id === p.workspace)?.name ?? "";
       out.push({
         pane: p.id,
         name: paneLabel(p.id),
         workspace: wsName,
-        status: p.status,
+        status: s,
         since: statusSince.get(p.id)?.since ?? clock.now,
       });
     }

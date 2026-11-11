@@ -23,6 +23,7 @@
     paneLabel,
     restoreOffer,
     restorePreviousSession,
+    shownStatus,
     tabCreate,
     wsCreate,
   } from "./state.svelte";
@@ -161,7 +162,7 @@
         kind: "pane",
         label: paneLabel(p.id),
         detail,
-        status: p.status,
+        status: shownStatus(p),
         run: () => void focusPane(p.id),
       });
     }

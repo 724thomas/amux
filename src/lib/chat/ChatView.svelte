@@ -3,8 +3,9 @@
   // a page (markdown replies, tool calls as rows, permission requests and
   // questions as cards) instead of the Claude Code TUI. State and actions live
   // in chat.svelte.ts; this component only draws them and routes input.
-  import { onMount, untrack, type Snippet } from "svelte";
+  import { onMount, tick, untrack, type Snippet } from "svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
+  import { writeText } from "@tauri-apps/plugin-clipboard-manager";
   import type { PaneId } from "../ipc";
   import { paneInfo, paneOnScreen } from "../state.svelte";
   import { settings } from "../settings.svelte";
@@ -13,6 +14,7 @@
     answerQuestion,
     chatOf,
     closeChat,
+    editedBesides,
     interrupt,
     newConversation,
     registerChatFocus,
@@ -20,9 +22,10 @@
     sendMessage,
     setModel,
     setPermissionMode,
+    setEffort,
     type PermissionChoice,
   } from "./chat.svelte";
-  import { EDIT_TOOLS, type ChatItem, type Question } from "./reducer";
+  import { EDIT_TOOLS, type ChatItem, type Question, type SlashCommand } from "./reducer";
   import EditCard from "./EditCard.svelte";
   import FilesPanel from "./FilesPanel.svelte";
   import Dropdown from "./Dropdown.svelte";
@@ -155,6 +158,18 @@
     const hit = (m?.models ?? []).find((o) => o.value === cur || o.resolvedModel === cur);
     return hit ? hit.value : cur;
   });
+  // Effort: the levels the current model takes (from Claude's model list), all
+  // of them when Claude did not say, none when it says the model takes none.
+  const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"];
+  const effortOptions = $derived.by(() => {
+    const models = m?.models ?? [];
+    const hit = models.find((o) => o.value === modelValue || (m?.model != null && o.resolvedModel === m.model));
+    const levels = hit?.effortLevels ?? EFFORT_ORDER;
+    const list = EFFORT_ORDER.filter((v) => levels.includes(v));
+    const cur = m?.effort;
+    if (cur && !list.includes(cur)) list.push(cur);
+    return list.map((v) => ({ value: v, label: v === "max" ? "effort max (다시 시작)" : `effort ${v}` }));
+  });
   const controlsLive = $derived(s?.gen != null && status !== "starting" && status !== "exited");
 
   /** Long changes in the taken-over history the person opened in full. */
@@ -174,28 +189,185 @@
     if (scroller.scrollHeight - top - scroller.clientHeight < 48) stick = true;
     else if (top < lastTop - 4) stick = false;
     lastTop = top;
+    nearTop();
   }
   $effect(() => {
     const el = list;
     if (!el) return;
     const ro = new ResizeObserver(() => {
-      if (stick && scroller) scroller.scrollTop = scroller.scrollHeight;
+      // Not while the mouse is held in the conversation: a selection being
+      // dragged would run away with the text scrolling under the pointer.
+      if (stick && scroller && !pressing) scroller.scrollTop = scroller.scrollHeight;
     });
     ro.observe(el);
     return () => ro.disconnect();
   });
 
+  // ---- what is drawn: the last few exchanges; older ones as you scroll up ----
+  // Every drawn item makes each screen update of WebKit dearer (measured with
+  // target/perf/wk_bench.py: a key cost 2ms at 252 items, 26ms at 2,004), and
+  // the whole app shares that one thread, so a long chat used to slow typing
+  // until amux froze. The conversation itself (`m.items`) stays whole: only
+  // the drawing is limited, so files, edits and Claude's memory are untouched.
+  /** Exchanges (a message of the person's and all that answered it) drawn by default. */
+  const BASE_TURNS = 3;
+  /** At most this many items by default, should one exchange be enormous
+   *  (one prompt, hundreds of tool calls). Measured in WebKitGTK: 250 items
+   *  cost what 21 do, 600 already a third more per streamed piece. */
+  const CAP = 250;
+  /** At most this many items added by one scroll to the top. */
+  const STEP = 300;
+  /** First chat item drawn once the person scrolled up for more; null: the default. */
+  let itemFrom = $state<number | null>(null);
+  /** First taken-over history row drawn once scrolled up for more; null: the default. */
+  let histFrom = $state<number | null>(null);
+
+  const histRows = $derived(s?.history ? historyRows(s.history.entries) : []);
+  /** Where the last `BASE_TURNS` exchanges start, and how many of them the
+   *  chat itself holds (the rest come from the taken-over history). */
+  const defaultWindow = $derived.by(() => {
+    const items = m?.items ?? [];
+    let users = 0;
+    let from = 0;
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (items[i].kind === "user" && ++users === BASE_TURNS) {
+        from = i;
+        break;
+      }
+    }
+    return { from: Math.max(from, items.length - CAP), users };
+  });
+  const itemFirst = $derived(Math.min(itemFrom ?? Infinity, defaultWindow.from));
+  const shownItems = $derived(m ? (itemFirst > 0 ? m.items.slice(itemFirst) : m.items) : []);
+  const defaultHistFrom = $derived.by(() => {
+    const need = BASE_TURNS - defaultWindow.users;
+    if (histRows.length === 0 || defaultWindow.from > 0 || need <= 0) return histRows.length;
+    let users = 0;
+    for (let i = histRows.length - 1; i >= 0; i--) {
+      if (histRows[i].kind === "user" && ++users === need) return Math.max(i, histRows.length - CAP);
+    }
+    return Math.max(0, histRows.length - CAP);
+  });
+  const histFirst = $derived(Math.min(histFrom ?? Infinity, defaultHistFrom));
+  /** The taken-over history is older than every chat item: drawn only once
+   *  all of those are. */
+  const historyDrawn = $derived(itemFirst === 0 && (histFirst < histRows.length || s?.history?.state !== "ready"));
+  const moreAbove = $derived(itemFirst > 0 || (histRows.length > 0 && histFirst > 0));
+
+  // A new conversation (or one taken over) starts from the default again.
+  $effect(() => {
+    void m;
+    untrack(() => {
+      itemFrom = null;
+      histFrom = null;
+      recall = null;
+    });
+  });
+
+  /** Draw one more exchange above (at most `STEP` items), keeping what is on
+   *  screen where it is: WebKit does not hold the view when content grows
+   *  above it, so the added height goes onto `scrollTop`. */
+  let loadingMore = false;
+  async function loadMore() {
+    if (!m || !scroller || loadingMore || !moreAbove) return;
+    if (itemFirst > 0) {
+      let i = itemFirst - 1;
+      while (i > 0 && m.items[i].kind !== "user") i--;
+      itemFrom = Math.max(i, itemFirst - STEP);
+    } else {
+      let i = Math.min(histFirst, histRows.length) - 1;
+      while (i > 0 && histRows[i].kind !== "user") i--;
+      histFrom = Math.max(i, histFirst - STEP);
+    }
+    loadingMore = true;
+    const before = scroller.scrollHeight;
+    const top = scroller.scrollTop;
+    await tick();
+    if (scroller) {
+      scroller.scrollTop = top + (scroller.scrollHeight - before);
+      lastTop = scroller.scrollTop;
+    }
+    loadingMore = false;
+  }
+  /** Near the top (or at it, with nothing to scroll): bring in the next exchange. */
+  function nearTop() {
+    if (scroller && moreAbove && scroller.scrollTop < 200) void loadMore();
+  }
+  // Too little drawn to scroll at all (a short default on a tall pane): fill
+  // up until it scrolls, or nothing is left above. Not while hidden.
+  $effect(() => {
+    void shownItems.length;
+    void histFirst;
+    if (!scroller || !moreAbove) return;
+    void tick().then(() => {
+      if (scroller && scroller.clientHeight > 0 && scroller.scrollHeight <= scroller.clientHeight + 8) void loadMore();
+    });
+  });
+
   // ---- keyboard ----
   let input = $state<HTMLTextAreaElement>();
   onMount(() => registerChatFocus(pane, () => input?.focus()));
+  // A press in the conversation may be the start of a text selection: the
+  // pane becoming focused from that same press must not pull the keyboard
+  // into the composer, which would drop the selection being dragged.
+  let pressing = false;
   $effect(() => {
-    if (focused && input) untrack(() => input?.focus());
+    if (focused && input) untrack(() => !pressing && !selectedText() && input?.focus());
   });
 
+  // ---- copying the conversation ----
+  /** The text selected inside this conversation, or "" (none, or elsewhere). */
+  function selectedText(): string {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !scroller || !sel.anchorNode) return "";
+    if (!scroller.contains(sel.anchorNode) || !sel.focusNode || !scroller.contains(sel.focusNode)) return "";
+    return sel.toString();
+  }
+  // Ctrl+C (and the terminal habit Ctrl+Shift+C) copy what is selected in the
+  // conversation, through the Rust clipboard like the terminal does
+  // (navigator.clipboard is unreliable in WebKitGTK). A selection inside the
+  // composer keeps its native copy.
+  function onCopyKey(e: KeyboardEvent) {
+    if (!e.ctrlKey || e.altKey || e.metaKey || e.code !== "KeyC") return;
+    if (document.activeElement === input && input && input.selectionStart !== input.selectionEnd) return;
+    const text = selectedText();
+    if (!text) return;
+    e.preventDefault();
+    e.stopPropagation();
+    void writeText(text);
+  }
+
+  // Fit the box to its text, as cheaply as typing allows. Every height change
+  // re-lays out the whole conversation beside it (thousands of nodes in a long
+  // chat), and collapsing to `auto` to measure is one more forced layout, so:
+  // growing just reads the overflow, only a shorter text (or a new font size)
+  // collapses to measure, and nothing is written when the height is the same.
+  // Not while Korean is being composed either: the IME's preedit would be
+  // disturbed (flicker, late letters); the end of composition fits it.
+  let composing = false;
+  let fitLen = 0;
+  let fitFont = 0;
   function autosize() {
-    if (!input) return;
-    input.style.height = "auto";
-    input.style.height = Math.min(input.scrollHeight, 220) + "px";
+    if (!input || composing) return;
+    const len = input.value.length;
+    const font = settings.fontSize;
+    let h: number;
+    if (len >= fitLen && font === fitFont && input.style.height) {
+      if (input.scrollHeight <= input.clientHeight) {
+        fitLen = len;
+        return;
+      }
+      h = input.scrollHeight;
+    } else {
+      const was = input.style.height;
+      input.style.height = "auto";
+      h = input.scrollHeight;
+      input.style.height = was;
+    }
+    fitLen = len;
+    fitFont = font;
+    const px = Math.min(h, 220) + "px";
+    if (input.style.height !== px) input.style.height = px;
   }
   $effect(() => {
     void s?.draft;
@@ -209,20 +381,168 @@
     if (!text.trim()) return;
     s.draft = "";
     stick = true;
+    // Back to the last few exchanges: reading far back does not keep it heavy.
+    itemFrom = null;
+    histFrom = null;
+    recall = null;
     const ok = await sendMessage(pane, text);
     if (!ok && s && !s.draft) s.draft = text;
+  }
+
+  // ---- earlier prompts: ↑ / ↓ in the composer, like a shell or the Claude CLI ----
+  /** A walk back through the person's earlier prompts, newest first. `at` is
+   *  the one in the composer (-1: their own unsent text, kept in `saved`).
+   *  Plain, nothing is drawn from it; typing or sending ends the walk. */
+  let recall: { list: string[]; at: number; saved: string } | null = null;
+  /** The person's prompts in this conversation, newest first, each once: the
+   *  chat's own and the taken-over history's (drawn or not). Built only when
+   *  a walk starts, so streaming never pays for it. */
+  function earlierPrompts(): string[] {
+    const all: string[] = [];
+    for (const r of histRows) if (r.kind === "user") all.push(r.text);
+    for (const it of m?.items ?? []) if (it.kind === "user") all.push(it.text);
+    const seen = new Set<string>();
+    const list: string[] = [];
+    for (let i = all.length - 1; i >= 0; i--) {
+      const t = all[i];
+      if (!t.trim() || seen.has(t)) continue;
+      seen.add(t);
+      list.push(t);
+    }
+    return list;
+  }
+  function showRecalled(text: string, up: boolean) {
+    if (!s) return;
+    s.draft = text;
+    // A recalled `/command` does not pop the `/` menu up (it would take ↑ / ↓).
+    slashHiddenFor = text;
+    // The caret goes to the end (to edit and send), except a several-line
+    // prompt reached with ↑: at its start, so the next ↑ goes on back.
+    const atStart = up && text.includes("\n");
+    void tick().then(() => {
+      if (!input) return;
+      const p = atStart ? 0 : input.value.length;
+      input.setSelectionRange(p, p);
+    });
+  }
+  /** ↑ on the first line and ↓ on the last line walk the earlier prompts
+   *  (true: handled); anywhere else the arrows move the caret as usual. */
+  function onRecallKey(e: KeyboardEvent): boolean {
+    if (!s || !input || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return false;
+    const a = input.selectionStart;
+    const b = input.selectionEnd;
+    if (a !== b) return false;
+    const v = input.value;
+    if (e.key === "ArrowUp") {
+      if (v.slice(0, a).includes("\n")) return false;
+      recall ??= { list: earlierPrompts(), at: -1, saved: s.draft };
+      if (recall.at + 1 >= recall.list.length) {
+        // Nothing older (or nothing at all): the arrow does what it always does.
+        if (recall.at < 0) recall = null;
+        return false;
+      }
+      recall.at++;
+      showRecalled(recall.list[recall.at], true);
+      return true;
+    }
+    if (e.key === "ArrowDown" && recall) {
+      if (v.slice(b).includes("\n")) return false;
+      recall.at--;
+      if (recall.at >= 0) showRecalled(recall.list[recall.at], false);
+      else {
+        // Past the newest: back to what the person had typed.
+        const back = recall.saved;
+        recall = null;
+        showRecalled(back, false);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  // ---- the `/` menu: slash commands and skills, like the Claude CLI ----
+  /** Esc hides the menu for the text it was open on; other text shows it again. */
+  let slashHiddenFor = $state<string | null>(null);
+  let slashIndex = $state(0);
+  let slashList = $state<HTMLElement | null>(null);
+  /** What follows the `/` while the composer holds only `/name-so-far`
+   *  (no space yet); null: no menu. */
+  const slashQuery = $derived.by(() => {
+    const d = s?.draft ?? "";
+    if (!d.startsWith("/") || d === slashHiddenFor) return null;
+    const q = d.slice(1);
+    return /\s/.test(q) ? null : q.toLowerCase();
+  });
+  /** Names starting with it first (an exact name on top), then names holding it. */
+  const slashMatches = $derived.by(() => {
+    const q = slashQuery;
+    const all = m?.commands ?? [];
+    if (q === null || all.length === 0) return [];
+    const exact: SlashCommand[] = [];
+    const starts: SlashCommand[] = [];
+    const within: SlashCommand[] = [];
+    for (const c of all) {
+      const n = c.name.toLowerCase();
+      if (n === q) exact.push(c);
+      else if (n.startsWith(q)) starts.push(c);
+      else if (n.includes(q)) within.push(c);
+    }
+    return [...exact, ...starts, ...within];
+  });
+  const slashOpen = $derived(slashMatches.length > 0);
+  // A new search starts at the top.
+  $effect(() => {
+    void slashQuery;
+    untrack(() => (slashIndex = 0));
+  });
+  // Keep the picked one in view.
+  $effect(() => {
+    const i = slashIndex;
+    if (!slashOpen || !slashList) return;
+    (slashList.children[i] as HTMLElement | undefined)?.scrollIntoView({ block: "nearest" });
+  });
+  function pickSlash(c: SlashCommand) {
+    if (!s) return;
+    s.draft = "/" + c.name + " ";
+    void tick().then(() => {
+      if (!input) return;
+      input.focus();
+      const p = input.value.length;
+      input.setSelectionRange(p, p);
+    });
+  }
+  /** Keys while the menu is open (true: handled). ↑ ↓ move, Tab or Enter
+   *  fills the name in (Enter on a name typed out in full sends it), Esc hides. */
+  function onSlashKey(e: KeyboardEvent): boolean {
+    if (!slashOpen || e.altKey || e.ctrlKey || e.metaKey) return false;
+    const n = slashMatches.length;
+    if (e.key === "ArrowDown") slashIndex = (slashIndex + 1) % n;
+    else if (e.key === "ArrowUp") slashIndex = (slashIndex - 1 + n) % n;
+    else if ((e.key === "Tab" || e.key === "Enter") && !e.shiftKey) {
+      const c = slashMatches[Math.min(slashIndex, n - 1)];
+      if (e.key === "Enter" && c.name.toLowerCase() === slashQuery) return false;
+      pickSlash(c);
+    } else if (e.key === "Escape") slashHiddenFor = s?.draft ?? null;
+    else return false;
+    return true;
   }
 
   function onKey(e: KeyboardEvent) {
     // 한글 IME 조합 중의 Enter 는 글자 확정이지 전송이 아니다 (Terminal.svelte 의
     // 입력창과 같은 가드).
     if (e.isComposing || e.keyCode === 229) return;
+    if (onSlashKey(e)) {
+      e.preventDefault();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
       e.preventDefault();
       void submit();
     } else if (e.key === "Escape" && busy) {
       e.preventDefault();
       interrupt(pane);
+    } else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && onRecallKey(e)) {
+      e.preventDefault();
     }
   }
 
@@ -376,6 +696,9 @@
   }
 </script>
 
+<!-- Captured: ahead of the app shortcuts and of a terminal holding the keys. -->
+<svelte:window onkeydowncapture={onCopyKey} />
+
 {#snippet toolInput(name: string, input: Record<string, unknown>)}
   {#if name === "Bash"}
     <pre class="cmd">$ {String(input.command ?? "")}</pre>
@@ -405,6 +728,14 @@
         <span class="dot"></span>{STATUS_LABEL[status] ?? status}
       </span>
       <span class="cwd" title={cwd ?? ""}>{cwd ? shortPath(cwd) : ""}</span>
+      <Dropdown
+        title="Effort: Claude 가 얼마나 깊이 생각할지 (높을수록 느리고 꼼꼼함, 다음 응답부터 적용). max 는 차례 사이에 Claude 를 같은 대화로 다시 시작합니다."
+        value={m.effort ?? ""}
+        options={effortOptions}
+        placeholder="effort"
+        disabled={!controlsLive || effortOptions.length === 0}
+        onchange={(v) => void setEffort(pane, v)}
+      />
       <Dropdown
         title="모델 (다음 응답부터 적용)"
         value={modelValue}
@@ -457,17 +788,36 @@
       class:hidden={covers}
       bind:this={scroller}
       onscroll={onScroll}
+      onwheel={(e) => {
+        // Already at the top, so no scroll event comes: the wheel asks for more.
+        if (e.deltaY < 0) nearTop();
+      }}
       onclick={onLinkClick}
+      onpointerdown={(e) => {
+        if (e.button !== 0) return;
+        pressing = true;
+        window.addEventListener(
+          "pointerup",
+          () => {
+            pressing = false;
+            // Catch up with what arrived meanwhile, unless text was picked.
+            if (stick && scroller && !selectedText()) scroller.scrollTop = scroller.scrollHeight;
+          },
+          { once: true },
+        );
+      }}
       onauxclick={(e) => {
         if ((e.target as HTMLElement | null)?.closest?.("a")) e.preventDefault();
       }}
     >
       <div class="list" bind:this={list}>
-        {#if s?.history}
+        {#if moreAbove}
+          <div class="more-above">위로 올리면 이전 대화를 더 불러옵니다</div>
+        {/if}
+        {#if s?.history && historyDrawn}
           <!-- The conversation this chat took over from the terminal's Claude
                (same session): drawn from its transcript, read-only. -->
           {@const h = s.history}
-          {@const rows = historyRows(h.entries)}
           <div class="history">
             <div class="history-head">
               터미널에서 하던 대화
@@ -476,13 +826,16 @@
             {#if h.state === "error"}
               <div class="muted small">이전 대화를 불러오지 못했습니다 ({h.error}). Claude 는 이 대화를 기억합니다.</div>
             {/if}
-            {#if h.compacted}
-              <div class="muted small">그보다 앞의 대화는 Claude 가 요약해 두어서 여기에는 보이지 않습니다.</div>
+            {#if histFirst === 0}
+              {#if h.compacted}
+                <div class="muted small">그보다 앞의 대화는 Claude 가 요약해 두어서 여기에는 보이지 않습니다.</div>
+              {/if}
+              {#if h.omitted > 0}
+                <div class="muted small">앞의 {h.omitted}개 항목은 생략했습니다.</div>
+              {/if}
             {/if}
-            {#if h.omitted > 0}
-              <div class="muted small">앞의 {h.omitted}개 항목은 생략했습니다.</div>
-            {/if}
-            {#each rows as r, i (i)}
+            {#each histRows.slice(histFirst) as r, j (histFirst + j)}
+              {@const i = histFirst + j}
               {#if r.kind === "user"}
                 <div class="user">{r.text}</div>
               {:else if r.kind === "text"}
@@ -533,7 +886,7 @@
             <div class="muted">Enter 로 보내고 Shift+Enter 로 줄을 바꿉니다. 작업 중에는 Esc 로 멈춥니다.</div>
           </div>
         {/if}
-        {#each m.items as item (item.id)}
+        {#each shownItems as item (item.id)}
           {#if item.kind === "user"}
             <div class="user">{item.text}</div>
           {:else if item.kind === "assistant"}
@@ -663,6 +1016,25 @@
       </div>
     {/if}
     <div class="composer">
+      {#if slashOpen}
+        <div class="slash-menu" role="listbox" aria-label="명령과 스킬" bind:this={slashList}>
+          {#each slashMatches as c, i (c.name)}
+            <button
+              type="button"
+              role="option"
+              aria-selected={i === slashIndex}
+              class:picked={i === slashIndex}
+              onmousedown={(e) => e.preventDefault()}
+              onmousemove={() => (slashIndex = i)}
+              onclick={() => pickSlash(c)}
+            >
+              <span class="slash-name">/{c.name}</span>
+              {#if c.argumentHint}<span class="slash-hint">{c.argumentHint}</span>{/if}
+              <span class="slash-desc">{c.description}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
       <textarea
         bind:this={input}
         bind:value={s.draft}
@@ -671,9 +1043,20 @@
           ? "보내면 Claude 를 다시 시작해 이어 갑니다"
           : busy
             ? "작업 중에도 보낼 수 있습니다 (지금 차례가 끝나면 이어서 처리)"
-            : "Claude 에게 메시지 보내기"}
+            : "Claude 에게 메시지 보내기 (/ 명령과 스킬, ↑ 이전 프롬프트)"}
         onkeydown={onKey}
-        oninput={autosize}
+        oninput={() => (recall = null)}
+        oncompositionstart={() => (composing = true)}
+        oncompositionend={() => {
+          composing = false;
+          autosize();
+        }}
+        onblur={() => {
+          // Leaving mid-composition may never deliver compositionend.
+          if (!composing) return;
+          composing = false;
+          autosize();
+        }}
       ></textarea>
       {#if busy}
         <button class="stop" title="중지 (Esc)" onclick={() => interrupt(pane)} disabled={m.interrupting}
@@ -698,6 +1081,7 @@
         persistKey="chat.v2"
         defaultShare={PANEL_SHARE}
         minRest={MIN_CONVERSATION}
+        elsewhere={() => editedBesides(m)}
         actions={[
           { icon: "⧉", title: "파일 창을 팝업 창으로 빼기 (여러 세션을 한 창에 모아 봅니다)", run: () => popOut(pane) },
         ]}
@@ -836,14 +1220,21 @@
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
+    /* The app is user-select: none; the conversation must be copyable. */
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  .scroller :global(button),
+  .scroller :global(summary) {
+    user-select: none;
+    -webkit-user-select: none;
   }
   .list {
     display: flex;
     flex-direction: column;
     gap: 8px;
+    /* The whole width of the pane: no narrow column with empty sides. */
     padding: 12px 14px 16px;
-    max-width: 920px;
-    margin: 0 auto;
   }
   .empty {
     margin: 18px 0;
@@ -863,6 +1254,14 @@
   }
   .small {
     font-size: 0.85em;
+  }
+  .more-above {
+    align-self: center;
+    padding: 2px 10px;
+    font-size: 0.78em;
+    color: var(--muted);
+    user-select: none;
+    -webkit-user-select: none;
   }
   .history {
     display: flex;
@@ -1302,6 +1701,7 @@
     border-top: 1px solid var(--border);
   }
   .composer {
+    position: relative;
     flex: 0 0 auto;
     display: flex;
     align-items: flex-end;
@@ -1309,6 +1709,60 @@
     padding: 8px;
     border-top: 1px solid var(--border);
     background: var(--surface-2);
+  }
+  /* The `/` menu opens upward over the conversation, as wide as the composer. */
+  .slash-menu {
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: calc(100% + 4px);
+    z-index: 20;
+    max-height: 280px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    padding: 4px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-2);
+    border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  }
+  .slash-menu button {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+    padding: 5px 8px;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  .slash-menu button.picked {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  .slash-name {
+    flex: 0 0 auto;
+    font-family: ui-monospace, "JetBrains Mono", "D2Coding", monospace;
+    font-weight: 600;
+  }
+  .slash-hint {
+    flex: 0 0 auto;
+    color: var(--muted);
+    font-size: 0.85em;
+  }
+  .slash-desc {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--muted);
+    font-size: 0.85em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .composer textarea {
     flex: 1 1 auto;

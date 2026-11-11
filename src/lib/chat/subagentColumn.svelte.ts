@@ -161,6 +161,8 @@ export async function poll(pane: PaneId, src: Source | null): Promise<boolean> {
     }
     if (f.agent_type) a.type = f.agent_type;
     if (f.description) a.description = f.description;
+    // The meta file (with the Agent call's id) may come after the transcript.
+    if (f.tool_use_id) a.toolUseId = f.tool_use_id;
     a.size = f.size;
     a.modifiedMs = f.modified_ms;
     if (f.finished) {

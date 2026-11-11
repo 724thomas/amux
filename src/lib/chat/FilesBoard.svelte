@@ -14,13 +14,16 @@
   //   - a terminal's changes: played back from disk when its status says a
   //     tool call finished (statusFeed.ts), as beside the terminal.
   import { onDestroy, onMount, untrack } from "svelte";
-  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
   import FilesPanel from "./FilesPanel.svelte";
+  import { SUBS_ASK, SUBS_EVENT, type SubCellMeta, type SubRowMsg, type SubsMsg } from "./subPanels.svelte";
   import {
     applyExit,
     applyLine,
     applyStderr,
     createModel,
+    dropFinishedSubs,
+    editedElsewhere,
     settleWatched,
     type ChatModel,
     type FileFeed,
@@ -48,7 +51,8 @@
   let panes = $state<PaneId[]>([]);
   let look = $state<Look | null>(null);
   let snap = $state<Snapshot | null>(null);
-  let zoomed = $state<PaneId | null>(null);
+  /** The zoomed cell's key (a pane, or a pane's subagent: `pane:id`). */
+  let zoomed = $state<string | null>(null);
   /** The first answers (the list, the panes) are in. */
   let loaded = $state(false);
 
@@ -95,7 +99,83 @@
       drivers.delete(pane);
       delete terms[pane];
     }
-    if (zoomed && !panes.includes(zoomed)) zoomed = null;
+  }
+
+  // Subagents' own cells, as the main window says (subPanels.svelte.ts): which
+  // ones (a chat's subagents that changed files, until their cards close) and
+  // their file-changing calls. This window sees no message of the person and
+  // no card, and opens only after the first change it is opened for, so it
+  // keeps no copy of its own.
+  const subCells = $state<Record<PaneId, SubCellMeta[]>>({});
+  const subFeeds = $state<Record<string, FileFeed>>({});
+  const subKey = (pane: PaneId, id: string) => `${pane}:${id}`;
+
+  function upsertRow(f: FileFeed, r: SubRowMsg) {
+    const at = f.toolIds[r.toolUseId];
+    if (at === undefined) {
+      const input = r.input ?? {};
+      f.items.push({
+        id: f.items.length,
+        kind: "tool",
+        toolUseId: r.toolUseId,
+        name: r.name,
+        input,
+        inputJson: JSON.stringify(input),
+        inputDone: true,
+        path: r.path,
+        patch: null,
+        resultKind: null,
+        result: null,
+        isError: r.isError,
+        done: r.done,
+        doneSeq: r.done ? ++f.fileSeq : 0,
+        awaiting: r.awaiting,
+        subSteps: 0,
+        subLast: null,
+        before: r.before,
+        arrivedMs: r.arrivedMs,
+      });
+      f.toolIds[r.toolUseId] = f.items.length - 1;
+      f.editOrder.push(r.toolUseId);
+      return;
+    }
+    const row = f.items[at];
+    if (row.kind !== "tool") return;
+    if (r.input) {
+      row.input = r.input;
+      row.inputJson = JSON.stringify(r.input);
+    }
+    if (r.before !== undefined) row.before = r.before;
+    row.awaiting = r.awaiting;
+    row.isError = r.isError;
+    if (r.done && !row.done) {
+      row.done = true;
+      row.doneSeq = ++f.fileSeq;
+    }
+  }
+
+  function takeCells(pane: PaneId, list: SubCellMeta[]) {
+    subCells[pane] = list;
+    const keep = new Set(list.map((c) => subKey(pane, c.id)));
+    for (const k of Object.keys(subFeeds)) if (k.startsWith(pane + ":") && !keep.has(k)) delete subFeeds[k];
+    for (const c of list) {
+      const k = subKey(pane, c.id);
+      subFeeds[k] ??= emptyFeed();
+      subFeeds[k].status = c.finished ? "idle" : "working";
+    }
+  }
+
+  function onSubs(msg: SubsMsg) {
+    if (msg.kind === "row") {
+      const k = subKey(msg.pane, msg.sub);
+      subFeeds[k] ??= emptyFeed();
+      upsertRow(subFeeds[k], msg.row);
+      return;
+    }
+    takeCells(msg.pane, msg.cells);
+    if (msg.kind === "state") {
+      for (const c of msg.cells) for (const r of msg.rows[c.id] ?? []) upsertRow(subFeeds[subKey(msg.pane, c.id)], r);
+    }
   }
 
   function takeState(s: PopoutState) {
@@ -134,7 +214,12 @@
     }
     // A turn started: following comes back on (the main window counts the
     // user's messages instead, which this window does not see).
-    if (m.status === "working" && was !== "working" && was !== "waiting") m.userSeq++;
+    if (m.status === "working" && was !== "working" && was !== "waiting") {
+      m.userSeq++;
+      // Its copy of the subagents' calls (only their counts per file are used
+      // here) would otherwise grow until Claude exits.
+      dropFinishedSubs(m);
+    }
   }
 
   const unlisten: UnlistenFn[] = [];
@@ -149,9 +234,12 @@
           sync();
         }),
         listen<ChatEventPayload>("chat:event", (e) => onChat(e.payload)),
+        listen<SubsMsg>(SUBS_EVENT, (e) => onSubs(e.payload)),
       ]);
       if (dead) return offs.forEach((off) => off());
       unlisten.push(...offs);
+      // Listening now: the main window sends the subagents' cells as they are.
+      void emit(SUBS_ASK).catch(() => {});
       const [s, state] = await Promise.all([getSnapshot(), filesState()]);
       snap ??= s;
       takeState(state);
@@ -195,7 +283,7 @@
       flash = { pane, seq: (flash?.seq ?? 0) + 1 };
       // Out of sight in a scrolled (narrow) window: bring it in.
       document
-        .querySelector(`.board .cell[data-pane="${pane}"]`)
+        .querySelector(`.board .cell[data-key="${pane}"]`)
         ?.scrollIntoView({ block: "nearest", inline: "nearest" });
     });
   });
@@ -214,7 +302,11 @@
   }
 
   interface Cell {
+    /** The pane for a conversation's cell, `pane:id` for a subagent's. */
+    key: string;
     pane: PaneId;
+    /** The subagent's Agent call, for a subagent's cell. */
+    sub: string | null;
     feed: FileFeed;
     cwd: string | null;
     label: string;
@@ -226,9 +318,21 @@
       const chat = info.chat ? chats[pane] : undefined;
       const feed = info.chat ? chat?.model : terms[pane];
       if (!feed) return [];
-      return [{ pane, feed, cwd: chat?.model.cwd ?? info.meta.cwd ?? null, label: labelOf(pane) }];
+      const cwd = chat?.model.cwd ?? info.meta.cwd ?? null;
+      const label = labelOf(pane);
+      // Its subagents' cells right after it, in the order they were sent off.
+      const subs = (info.chat ? (subCells[pane] ?? []) : []).flatMap((c): Cell[] => {
+        const key = subKey(pane, c.id);
+        const f = subFeeds[key];
+        return f ? [{ key, pane, sub: c.id, feed: f, cwd, label: `${label} ▸ ${c.label}` }] : [];
+      });
+      return [{ key: pane, pane, sub: null, feed, cwd, label }, ...subs];
     }),
   );
+  // A zoomed cell that went away (put back, or its subagent's card closed).
+  $effect(() => {
+    if (zoomed && !cells.some((c) => c.key === zoomed)) zoomed = null;
+  });
 
   // Columns: the count whose cells come closest to CELL_RATIO, never narrower
   // than MIN_CELL_W (more rows instead, and the window scrolls).
@@ -251,7 +355,7 @@
     }
     return best;
   }
-  const shown = $derived(zoomed ? cells.filter((c) => c.pane === zoomed) : cells);
+  const shown = $derived(zoomed ? cells.filter((c) => c.key === zoomed) : cells);
   const cols = $derived(columnsFor(shown.length, boardW, boardH));
   /** The last cell stretches over the empty slots of the last row. */
   function spanOf(i: number): string | undefined {
@@ -275,9 +379,9 @@
       const cell = target?.closest<HTMLElement>(".cell");
       if (!cell || cells.length < 2) return;
       if (target?.closest("button, input, label, select, textarea, a")) return;
-      const pane = cell.dataset.pane as PaneId | undefined;
-      if (!pane) return;
-      zoomed = zoomed === pane ? null : pane;
+      const key = cell.dataset.key;
+      if (!key) return;
+      zoomed = zoomed === key ? null : key;
     };
     el.addEventListener("dblclick", onDblClick);
     return () => el.removeEventListener("dblclick", onDblClick);
@@ -295,6 +399,7 @@
       cols: () => cols,
       cells: () =>
         cells.map((c) => ({
+          key: c.key,
           pane: c.pane,
           label: c.label,
           cwd: c.cwd,
@@ -326,7 +431,7 @@
     bind:clientWidth={boardW}
     bind:clientHeight={boardH}
   >
-    {#each cells as c (c.pane)}
+    {#each cells as c (c.key)}
       <!-- `cells` is rebuilt on every snapshot. Through @const (a derived) a
            prop changes only when its value does; passed as c.cwd it would
            change with each new cell object, and the panel would take every
@@ -335,16 +440,21 @@
       {@const feed = c.feed}
       {@const cwd = c.cwd}
       {@const label = c.label}
+      {@const isSub = c.sub !== null}
       <div
         class="cell"
+        class:sub={isSub}
         data-pane={c.pane}
+        data-key={c.key}
         class:gone={at < 0}
-        class:current={currentCell === c.pane}
-        class:flash-a={flash?.pane === c.pane && flash.seq % 2 === 1}
-        class:flash-b={flash?.pane === c.pane && flash.seq % 2 === 0}
-        title={currentCell === c.pane ? "메인 창에서 지금 고른 세션" : undefined}
+        class:current={currentCell === c.key}
+        class:flash-a={flash?.pane === c.key && flash.seq % 2 === 1}
+        class:flash-b={flash?.pane === c.key && flash.seq % 2 === 0}
+        title={currentCell === c.key ? "메인 창에서 지금 고른 세션" : undefined}
         style:grid-column={at < 0 ? undefined : spanOf(at)}
       >
+        <!-- A subagent's cell: only its own calls, typed at three times the
+             first speed; it goes when its card does (no putting back). -->
         <FilesPanel
           model={feed}
           {cwd}
@@ -352,23 +462,34 @@
           fill
           {label}
           closable={false}
-          onclose={() => dock(c.pane)}
+          onclose={() => {
+            if (!isSub) dock(c.pane);
+          }}
           persistKey="popout"
+          sub={isSub}
+          leaveSubChanges={!isSub}
+          elsewhere={() =>
+            editedElsewhere(
+              Object.values(chats).map((s) => s.model),
+              feed,
+            )}
           actions={[
             ...(cells.length > 1
               ? [
                   {
-                    icon: zoomed === c.pane ? "⤡" : "⤢",
+                    icon: zoomed === c.key ? "⤡" : "⤢",
                     title:
-                      zoomed === c.pane
+                      zoomed === c.key
                         ? "다시 칸으로 나눠 보기 (칸을 두 번 눌러도 됩니다)"
                         : "이 칸만 크게 보기 (칸을 두 번 눌러도 됩니다)",
-                    on: zoomed === c.pane,
-                    run: () => (zoomed = zoomed === c.pane ? null : c.pane),
+                    on: zoomed === c.key,
+                    run: () => (zoomed = zoomed === c.key ? null : c.key),
                   },
                 ]
               : []),
-            { icon: "↩", title: "이 파일 창을 원래 세션 화면으로 되돌리기", run: () => dock(c.pane) },
+            ...(isSub
+              ? []
+              : [{ icon: "↩", title: "이 파일 창을 원래 세션 화면으로 되돌리기", run: () => dock(c.pane) }]),
           ]}
         />
       </div>
