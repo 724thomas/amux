@@ -36,6 +36,7 @@ import {
   noteCardAnswered,
   noteControlFailed,
   noteClosed,
+  noteContext,
   noteControlSent,
   noteSendFailed,
   noteUserSent,
@@ -44,6 +45,7 @@ import {
   type ChatModel,
   type FileFeed,
 } from "./reducer";
+import { rememberWindow } from "./usage.svelte";
 
 export interface ChatSession {
   /** The chat view is on screen, covering the pane's terminal. */
@@ -155,6 +157,11 @@ function handle(s: ChatSession, ev: ChatEventPayload) {
       return;
     }
     applyLine(s.model, obj);
+    // A turn's end reports the model's context window: keep it for the
+    // next chats on that model.
+    if ((obj as { type?: unknown } | null)?.type === "result") {
+      rememberWindow(s.model.ctxModel ?? s.model.model, s.model.ctxWindow);
+    }
   } else if (ev.kind === "stderr") {
     applyStderr(s.model, ev.data);
   } else if (ev.kind === "exit") {
@@ -387,6 +394,8 @@ function takeOver(pane: PaneId, session: string, ended: boolean) {
     (h) => {
       if (s.history?.session !== session) return;
       s.history = { ...s.history, state: "ready", entries: h.entries, omitted: h.omitted, compacted: h.compacted };
+      // How full the context already is, until the chat's own first reply.
+      if (h.lastReply && s.model.ctxTokens === null) noteContext(s.model, h.lastReply);
     },
     (e) => {
       if (s.history?.session !== session) return;

@@ -420,5 +420,27 @@ export interface SessionHistory {
   omitted: number;
   /** Compacted: what came before is only a summary to Claude now. */
   compacted: boolean;
+  /** The last reply's model and API usage, to show how full the context is
+   *  before the chat's own first reply. */
+  lastReply: { model?: string; usage?: Record<string, unknown> } | null;
 }
 export const sessionHistory = (session: string) => invoke<SessionHistory>("session_history", { session });
+
+// -- Claude subscription usage (crates/amux-core/src/usage.rs)
+
+/** One limit window, as Claude Code hands a status line. */
+export interface UsageWindow {
+  /** 0 to 100. */
+  used_percentage: number;
+  /** Unix epoch seconds when it resets. */
+  resets_at: number | null;
+}
+export interface ClaudeUsage {
+  /** Unix epoch seconds of the fetch: an old file means amux stopped polling. */
+  fetched_at: number;
+  five_hour: UsageWindow | null;
+  seven_day: UsageWindow | null;
+}
+/** What amux's poller last fetched (every five minutes), the file the
+ *  terminal status line reads too; null before the first success. */
+export const claudeUsage = () => invoke<ClaudeUsage | null>("claude_usage");

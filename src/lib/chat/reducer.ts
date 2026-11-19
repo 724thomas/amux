@@ -151,6 +151,14 @@ export interface ChatModel {
   commands: SlashCommand[];
   /** The effort Claude applies now (`get_settings` → `applied.effort`). */
   effort: string | null;
+  /** How much context the main thread's latest reply read (its input plus
+   *  cache tokens), counted as Claude Code's status line counts `[ctx:N%]`;
+   *  null before any reply. */
+  ctxTokens: number | null;
+  /** The model that reply came from (`message.model`), for its window. */
+  ctxModel: string | null;
+  /** That model's context window, from a turn's `result.modelUsage`. */
+  ctxWindow: number | null;
   cwd: string | null;
   /** User messages sent whose `result` has not arrived yet. */
   pendingTurns: number;
@@ -227,6 +235,9 @@ export function createModel(): ChatModel {
     models: [],
     commands: [],
     effort: null,
+    ctxTokens: null,
+    ctxModel: null,
+    ctxWindow: null,
     cwd: null,
     pendingTurns: 0,
     requesting: false,
@@ -604,10 +615,38 @@ function applyStreamEvent(m: ChatModel, obj: Json) {
   }
 }
 
+/** The context a reply read, from its API usage: input plus cache creation
+ *  plus cache read, output left out, as the status line's `[ctx:N%]` sums it.
+ *  Claude Code's own stand-in replies (`<synthetic>`: an error, an
+ *  interrupt) carry no real usage and are skipped. */
+export function noteContext(m: ChatModel, msg: Json) {
+  const u = msg?.usage;
+  if (!u || typeof u !== "object" || msg.model === "<synthetic>") return;
+  const read = tokens(u.input_tokens) + tokens(u.cache_creation_input_tokens) + tokens(u.cache_read_input_tokens);
+  if (read <= 0) return;
+  m.ctxTokens = read;
+  if (typeof msg.model === "string" && msg.model) m.ctxModel = msg.model;
+}
+
+const tokens = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
+
+/** The context window of `model` in a `result`'s `modelUsage`, which is keyed
+ *  by model id and lists every model the session used (its subagents' too).
+ *  With no entry for `model`, a lone entry is taken as the main one. */
+export function contextWindowOf(modelUsage: Json, model: string | null): number | null {
+  if (!modelUsage || typeof modelUsage !== "object") return null;
+  const sized = Object.entries(modelUsage as Record<string, Json>).filter(
+    ([, v]) => typeof v?.contextWindow === "number" && v.contextWindow > 0,
+  );
+  const hit = (model ? sized.find(([k]) => k === model) : undefined) ?? (sized.length === 1 ? sized[0] : undefined);
+  return hit ? hit[1].contextWindow : null;
+}
+
 function applyAssistant(m: ChatModel, obj: Json) {
   const msg = obj.message ?? {};
   const msgId: string = msg.id ?? "?";
   m.requesting = false;
+  noteContext(m, msg);
   for (const block of msg.content ?? []) {
     if (block?.type === "text") {
       const text = String(block.text ?? "");
@@ -806,6 +845,8 @@ function applyResult(m: ChatModel, obj: Json) {
   m.requesting = false;
   m.pendingTurns = Math.max(0, m.pendingTurns - 1);
   if (obj.session_id) m.sessionId = String(obj.session_id);
+  const window = contextWindowOf(obj.modelUsage, m.ctxModel ?? m.model);
+  if (window) m.ctxWindow = window;
   settleStatus(m);
 }
 

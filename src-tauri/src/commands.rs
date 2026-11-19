@@ -18,6 +18,15 @@ pub fn get_snapshot(engine: Eng<'_>) -> Snapshot {
     engine.snapshot()
 }
 
+/// The Claude subscription usage amux's poller last wrote (`claude-usage.json`),
+/// for the chat header's limit meter: the same numbers the terminal status
+/// line reads from the same file. `None` until a poll has succeeded. Async so
+/// the file read stays off the main thread.
+#[tauri::command]
+pub async fn claude_usage() -> Option<amux_core::usage::Usage> {
+    amux_core::usage::read(&amux_core::usage::usage_path()?)
+}
+
 // -- previous session ---------------------------------------------------------
 
 /// The session found on disk at launch, kept in memory for the restore offer.

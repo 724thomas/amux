@@ -38,6 +38,7 @@ pub fn run() {
         .manage(subagents::Subagents::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_snapshot,
+            commands::claude_usage,
             commands::saved_session,
             commands::restore_session,
             commands::search_history,

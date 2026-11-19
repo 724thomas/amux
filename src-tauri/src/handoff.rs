@@ -126,6 +126,12 @@ pub struct History {
     /// The conversation was compacted: what came before is only a summary
     /// to Claude now, and is not shown.
     pub compacted: bool,
+    /// The branch's last reply that carries API usage, as
+    /// `{"model": …, "usage": …}`: the chat shows how full the context is from
+    /// it before its own first reply. `None` when there is none (no reply yet,
+    /// or only Claude Code's own `<synthetic>` stand-ins).
+    #[serde(rename = "lastReply")]
+    pub last_reply: Option<Value>,
 }
 
 #[tauri::command]
@@ -152,6 +158,8 @@ pub(crate) fn history_of(path: &Path) -> Result<History, String> {
     // uuid -> (parent, is a compaction boundary)
     let mut nodes: HashMap<String, (Option<String>, bool)> = HashMap::new();
     let mut shown: Vec<(String, Vec<Value>)> = Vec::new();
+    // uuid -> model and usage of each main-thread reply that has them
+    let mut replies: Vec<(String, Value)> = Vec::new();
     let mut leaf: Option<String> = None;
     for line in text.lines() {
         // Raw API requests and other bookkeeping lines carry no place in the
@@ -168,6 +176,13 @@ pub(crate) fn history_of(path: &Path) -> Result<History, String> {
         }
         if matches!(v["type"].as_str(), Some("user" | "assistant")) {
             leaf = Some(uuid.to_string());
+            let msg = &v["message"];
+            if v["type"].as_str() == Some("assistant")
+                && msg["usage"].is_object()
+                && msg["model"].as_str() != Some("<synthetic>")
+            {
+                replies.push((uuid.to_string(), json!({ "model": msg["model"], "usage": msg["usage"] })));
+            }
             let entries = history_entries(&v);
             if !entries.is_empty() {
                 shown.push((uuid.to_string(), entries));
@@ -206,7 +221,8 @@ pub(crate) fn history_of(path: &Path) -> Result<History, String> {
     }
     let omitted = entries.len() - keep;
     entries.drain(..omitted);
-    Ok(History { entries, omitted, compacted })
+    let last_reply = replies.into_iter().rev().find(|(u, _)| chain.contains(u)).map(|(_, r)| r);
+    Ok(History { entries, omitted, compacted, last_reply })
 }
 
 fn head_end(line: &str) -> usize {
@@ -304,21 +320,35 @@ mod tests {
             line("b", Some("a"), "assistant", say("첫 답")),
             // A rewind: the person went back and asked again from "b".
             line("c", Some("b"), "user", user("버린 질문")),
-            line("d", Some("c"), "assistant", say("버린 답")),
+            line("d", Some("c"), "assistant", json!({ "message": {
+                "model": "claude-opus-5-5", "usage": { "input_tokens": 9, "cache_read_input_tokens": 999 },
+                "content": [{ "type": "text", "text": "버린 답" }]
+            } })),
             line("e", Some("b"), "user", user("다시 한 질문")),
             r#"{"type":"api-request","data":"x"}"#.to_string(),
-            line("f", Some("e"), "assistant", json!({ "message": { "content": [
-                { "type": "thinking", "thinking": "..." },
-                { "type": "tool_use", "id": "t1", "name": "Read", "input": { "file_path": "/r/a.py" } }
-            ] } })),
+            line("f", Some("e"), "assistant", json!({ "message": {
+                "model": "claude-opus-5-5",
+                "usage": { "input_tokens": 2, "cache_creation_input_tokens": 300, "cache_read_input_tokens": 40000 },
+                "content": [
+                    { "type": "thinking", "thinking": "..." },
+                    { "type": "tool_use", "id": "t1", "name": "Read", "input": { "file_path": "/r/a.py" } }
+                ]
+            } })),
             line("g", Some("f"), "user", json!({ "message": { "content": [
                 { "type": "tool_result", "tool_use_id": "t1", "content": "1\tprint()" }
             ] } })),
             line("h", Some("g"), "user", json!({ "isMeta": true, "message": { "content": "<system-reminder>x</system-reminder>" } })),
             line("i", Some("h"), "user", json!({ "origin": { "kind": "task-notification" }, "message": { "content": "<task-notification>" } })),
             line("j", Some("i"), "user", user("<command-name>/context</command-name>\n<command-message>context</command-message>\n<command-args></command-args>")),
-            line("k", Some("j"), "assistant", say("마지막 답")),
-            line("z", Some("k"), "assistant", json!({ "isSidechain": true, "message": { "content": [{ "type": "text", "text": "서브에이전트" }] } })),
+            // Claude Code's own stand-in reply: no real usage, not counted.
+            line("k", Some("j"), "assistant", json!({ "message": {
+                "model": "<synthetic>", "usage": { "input_tokens": 0 },
+                "content": [{ "type": "text", "text": "마지막 답" }]
+            } })),
+            line("z", Some("k"), "assistant", json!({ "isSidechain": true, "message": {
+                "model": "claude-haiku-5-5", "usage": { "input_tokens": 5 },
+                "content": [{ "type": "text", "text": "서브에이전트" }]
+            } })),
         ];
         fs::write(&path, lines.join("\n") + "\n").unwrap();
         let h = history_of(&path).unwrap();
@@ -333,6 +363,15 @@ mod tests {
         );
         assert!(!h.compacted);
         assert_eq!(h.omitted, 0);
+        // The last reply with usage on the resumed branch: not the abandoned
+        // "d", not the synthetic "k", not the subagent's "z".
+        assert_eq!(
+            h.last_reply,
+            Some(json!({
+                "model": "claude-opus-5-5",
+                "usage": { "input_tokens": 2, "cache_creation_input_tokens": 300, "cache_read_input_tokens": 40000 }
+            }))
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -342,7 +381,10 @@ mod tests {
         let path = dir.join("s.jsonl");
         let lines = [
             line("a", None, "user", json!({ "message": { "content": "옛 질문" } })),
-            line("b", Some("a"), "assistant", json!({ "message": { "content": [{ "type": "text", "text": "옛 답" }] } })),
+            line("b", Some("a"), "assistant", json!({ "message": {
+                "model": "claude-opus-5-5", "usage": { "input_tokens": 400000 },
+                "content": [{ "type": "text", "text": "옛 답" }]
+            } })),
             line("c", None, "system", json!({ "subtype": "compact_boundary", "logicalParentUuid": "b" })),
             line("d", Some("c"), "user", json!({ "isCompactSummary": true, "message": { "content": "요약: ..." } })),
             line("e", Some("d"), "user", json!({ "message": { "content": "요약 뒤 질문" } })),
@@ -352,6 +394,7 @@ mod tests {
         assert!(h.compacted);
         assert_eq!(h.entries.len(), 1, "{:?}", h.entries);
         assert_eq!(h.entries[0]["text"], "요약 뒤 질문");
+        assert_eq!(h.last_reply, None, "the reply before the compaction no longer measures the context");
         let _ = fs::remove_dir_all(&dir);
     }
 

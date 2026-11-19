@@ -32,6 +32,8 @@
   import { dockBack, popOut, popout } from "./popout.svelte";
   import { renderMarkdown } from "./markdown";
   import { clip, inputJson, seconds, shortPath, toolSummary } from "./format";
+  import { ctxPercent, limitsShown, tone } from "./meter";
+  import { knownWindow, usageFeed, watchUsage } from "./usage.svelte";
   import { historyRows } from "./history";
   import { stepDiff } from "./subagents";
 
@@ -171,6 +173,27 @@
     return list.map((v) => ({ value: v, label: v === "max" ? "effort max (다시 시작)" : `effort ${v}` }));
   });
   const controlsLive = $derived(s?.gen != null && status !== "starting" && status !== "exited");
+
+  // The terminal status line's `[ctx:N%] / [5h, week]`, next to the effort
+  // picker: how full this conversation's context is, and the subscription
+  // limits amux polls for every session.
+  $effect(() => watchUsage());
+  const ctxWindow = $derived(m ? (m.ctxWindow ?? knownWindow(m.ctxModel ?? m.model)) : null);
+  const ctxPct = $derived(m ? ctxPercent(m.ctxTokens, ctxWindow) : null);
+  const limits = $derived(limitsShown(usageFeed.usage, usageFeed.nowSec));
+  const meterTitle = $derived.by(() => {
+    const lines: string[] = [];
+    if (ctxPct !== null && m?.ctxTokens != null && ctxWindow) {
+      lines.push(
+        `ctx: 이 대화가 차지한 문맥 ${ctxPct}% (마지막 응답이 읽은 ${m.ctxTokens.toLocaleString()} / ${ctxWindow.toLocaleString()} 토큰, 터미널 상태 줄과 같은 계산)`,
+      );
+    }
+    for (const l of limits) {
+      lines.push(`${l.label} 한도 ${l.pct}% 사용${l.when ? `, ${l.when} 뒤 초기화` : ""}`);
+    }
+    if (limits.length) lines.push("한도는 amux 가 5분마다 받아 오는 값입니다.");
+    return lines.join("\n");
+  });
 
   /** Long changes in the taken-over history the person opened in full. */
   let historyOpen = $state<Record<number, boolean>>({});
@@ -728,6 +751,12 @@
         <span class="dot"></span>{STATUS_LABEL[status] ?? status}
       </span>
       <span class="cwd" title={cwd ?? ""}>{cwd ? shortPath(cwd) : ""}</span>
+      {#if ctxPct !== null || limits.length}
+        <!-- One line each: whitespace between these would show as stray spaces. -->
+        <span class="meter" title={meterTitle}
+          >{#if ctxPct !== null}<span class="t-{tone(ctxPct)}">[ctx:{ctxPct}%]</span>{/if}{#if ctxPct !== null && limits.length}{" / "}{/if}{#if limits.length}[{#each limits as l, i (l.label)}{i ? ", " : ""}<span class="t-{tone(l.pct)}">{l.when ? `${l.when} ` : ""}{l.pct}%</span>{/each}]{/if}</span
+        >
+      {/if}
       <Dropdown
         title="Effort: Claude 가 얼마나 깊이 생각할지 (높을수록 느리고 꼼꼼함, 다음 응답부터 적용). max 는 차례 사이에 Claude 를 같은 대화로 다시 시작합니다."
         value={m.effort ?? ""}
@@ -1157,6 +1186,24 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* The status line's look: brackets muted, each number in its color. */
+  .meter {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    font-family: ui-monospace, "JetBrains Mono", "D2Coding", monospace;
+    font-size: 0.92em;
+    color: var(--muted);
+    cursor: default;
+  }
+  .meter .t-low {
+    color: var(--green);
+  }
+  .meter .t-mid {
+    color: var(--yellow);
+  }
+  .meter .t-high {
+    color: var(--red);
   }
   button {
     font: inherit;

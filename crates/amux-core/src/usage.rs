@@ -190,6 +190,14 @@ pub fn write(path: &Path, usage: &Usage) -> io::Result<()> {
     fs::rename(&tmp, path)
 }
 
+/// The usage file as last written, for a reader inside amux (the chat
+/// header's meter; status line scripts read the file themselves). `None`
+/// when there is no file yet or it does not parse. Whether it is fresh is the
+/// reader's call (`fetched_at`).
+pub fn read(path: &Path) -> Option<Usage> {
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
 /// When to ask next: the regular interval, or shortly after the earliest
 /// window reset if that comes sooner — right after a reset the old number is
 /// simply wrong.
@@ -325,6 +333,11 @@ mod tests {
         write(&file, &usage).unwrap();
         let back: Usage = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(back, usage);
+        assert_eq!(read(&file), Some(usage), "read() gives back what write() wrote");
+        assert_eq!(read(&dir.join("missing.json")), None);
+        let bad = dir.join("bad.json");
+        fs::write(&bad, "{not json").unwrap();
+        assert_eq!(read(&bad), None);
         let leftovers: Vec<_> = fs::read_dir(file.parent().unwrap())
             .unwrap()
             .filter_map(|e| e.ok())
