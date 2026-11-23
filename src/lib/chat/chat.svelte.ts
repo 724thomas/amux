@@ -23,7 +23,7 @@ import {
   type PaneId,
   type SubEntry,
 } from "../ipc";
-import { paneInfo } from "../state.svelte";
+import { paneInfo, recordCommand } from "../state.svelte";
 import { subs } from "./subagentColumn.svelte";
 import { lastTermOf } from "./subagentLinks.svelte";
 import { running } from "./subagents";
@@ -527,6 +527,10 @@ export async function sendMessage(pane: PaneId, text: string): Promise<boolean> 
   noteUserSent(s.model, body);
   try {
     await write(pane, { type: "user", message: { role: "user", content: body } });
+    // Into the pane's command log too, the one the terminal's typed commands
+    // go to: the strip at the top shows it in either mode. Only once sent: a
+    // failed send puts the text back in the composer to send again.
+    recordCommand(pane, body);
     return true;
   } catch (e) {
     noteSendFailed(s.model, String(e));

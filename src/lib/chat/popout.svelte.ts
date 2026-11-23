@@ -32,11 +32,19 @@ export function lookNow(): Look {
   return { theme: settings.theme, fontSize: settings.fontSize };
 }
 
-/** Move this pane's files panel into the pop-out window (opening it). */
-export function popOut(pane: PaneId) {
-  void filesPop(pane, true, lookNow())
-    .then(take)
-    .catch((e) => console.warn("[amux] pop out", e));
+/** Move this pane's files panel into the pop-out window (opening it).
+ *  `focus` false: without taking the keyboard (an automatic move). Resolves
+ *  to whether it went: false when the window could not open. */
+export function popOut(pane: PaneId, focus = true): Promise<boolean> {
+  return filesPop(pane, true, lookNow(), focus)
+    .then((s) => {
+      take(s);
+      return s.panes.includes(pane);
+    })
+    .catch((e) => {
+      console.warn("[amux] pop out", e);
+      return false;
+    });
 }
 
 /** Put this pane's files panel back in its pane. */

@@ -353,8 +353,9 @@ export interface PopoutState {
   look: Look | null;
 }
 /** Move a pane's files panel into the pop-out window (`out`) or back. */
-export const filesPop = (pane: PaneId, out: boolean, look: Look | null) =>
-  invoke<PopoutState>("files_pop", { pane, out, look });
+/** `focus` false: open or keep the window without taking the keyboard. */
+export const filesPop = (pane: PaneId, out: boolean, look: Look | null, focus = true) =>
+  invoke<PopoutState>("files_pop", { pane, out, look, focus });
 export const filesState = () => invoke<PopoutState>("files_state");
 export const filesLook = (look: Look) => invoke<void>("files_look", { look });
 

@@ -154,12 +154,13 @@ function publish(pane: PaneId, m: ChatModel) {
 }
 
 /** Open the pop-out window with this chat's cell (its subagents' cells come
- *  after it), unless the person put the panel back during this request. */
+ *  after it), unless the person placed the panel themselves during this
+ *  request. Without taking the keyboard: nobody asked for the window. */
 function wantCells(pane: PaneId) {
   const s = chats.byPane[pane];
   if (!s || s.holdSeq === s.model.userSeq) return;
   s.panel = "open";
-  if (!popout.panes.includes(pane)) popOut(pane);
+  if (!popout.panes.includes(pane)) void popOut(pane, false);
 }
 
 /** A subagent's Write: read the file before it lands, so that a cell that

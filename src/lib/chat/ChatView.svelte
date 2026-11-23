@@ -29,6 +29,7 @@
   import EditCard from "./EditCard.svelte";
   import FilesPanel from "./FilesPanel.svelte";
   import Dropdown from "./Dropdown.svelte";
+  import LastInputStrip from "../LastInputStrip.svelte";
   import { dockBack, popOut, popout } from "./popout.svelte";
   import { renderMarkdown } from "./markdown";
   import { clip, inputJson, seconds, shortPath, toolSummary } from "./format";
@@ -60,6 +61,8 @@
 
   // ---- the files panel (FilesPanel.svelte) ----
   let bodyWidth = $state(0);
+  /** The chat's height (the pane's): caps the unfolded command log. */
+  let chatHeight = $state(0);
   /** The panel's share of the width beside the conversation: files 3,
    *  conversation 2 (until the person drags its edge). */
   const PANEL_SHARE = 0.6;
@@ -84,23 +87,32 @@
     return row?.kind === "tool" && !row.done;
   });
   const editedCount = $derived(m ? Object.keys(m.edits).length : 0);
+  // The person opened or closed the panel here (📂, its ✕): that stands for
+  // the rest of this request, files changing or not.
   function setPanel(state: "open" | "closed") {
     if (!s) return;
     s.panel = state;
-    if (state === "closed" && m) s.holdSeq = m.userSeq;
+    if (m) s.holdSeq = m.userSeq;
   }
   // A file change started (an Edit/Write call, or a change seen on disk):
-  // show the files by themselves. With the pop-out window open they go there,
-  // as a cell of their own (the window keeps every chat's calls, so the one
-  // being written is typed there from its start); else beside the
-  // conversation (over it, in a narrow pane). What the person did during this
-  // request (closed the panel, put it back from the pop-out) stands until
-  // their next message.
+  // show the files by themselves, in the pop-out window, as a cell of their
+  // own (the window keeps every chat's calls, so the one being written is
+  // typed there from its start). The window opens without taking the
+  // keyboard: the person may be typing the next message. Only when it cannot
+  // open do they show here, beside the conversation (over it, in a narrow
+  // pane). What the person did during this request (opened or closed the
+  // panel here, put it back from the pop-out) stands until their next message.
+  let popping = false;
   function wantPanel() {
-    if (!s || !m || popped) return;
+    if (!s || !m || popped || popping) return;
     if (s.holdSeq === m.userSeq) return;
-    s.panel = "open";
-    if (popout.panes.length > 0) popOut(pane);
+    popping = true;
+    void popOut(pane, false).then((ok) => {
+      popping = false;
+      if (ok || !s || !m) return;
+      s.panel = "open";
+      s.holdSeq = m.userSeq; // no new try at every change of this request
+    });
   }
   // Put back from the pop-out window (its ↩, or the window closed): shown
   // here, and kept here for the rest of this request.
@@ -745,7 +757,7 @@
 {/snippet}
 
 {#if s && m}
-  <div class="chat" style="--chat-fs: {settings.fontSize}px">
+  <div class="chat" style="--chat-fs: {settings.fontSize}px" bind:clientHeight={chatHeight}>
     <header>
       <span class="status {status}" title="Claude 상태">
         <span class="dot"></span>{STATUS_LABEL[status] ?? status}
@@ -808,6 +820,10 @@
       >
       {#if tools}{@render tools(true)}{/if}
     </header>
+
+    <!-- The terminal's "직전 명령" strip, the same log: what was sent in this
+         pane, typed in the terminal or sent from here. -->
+    <LastInputStrip {pane} areaHeight={chatHeight} />
 
     <div class="body" bind:clientWidth={bodyWidth} style:--chat-bottom-h="{bottomHeight}px">
     <div class="main">

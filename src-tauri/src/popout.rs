@@ -98,34 +98,44 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-fn open_or_focus(app: &AppHandle) -> Result<(), String> {
+/// Open the pop-out window, or bring it up. `focus`: the person asked for it
+/// (its ⧉); without it the window comes up without taking the keyboard, as
+/// when a chat's file change sends its panel there while the person may be
+/// typing the next message (an existing window is left where it is,
+/// minimized included; a new one only refuses focus until first drawn).
+fn open_or_focus(app: &AppHandle, focus: bool) -> Result<(), String> {
     if let Some(w) = app.get_webview_window(FILES) {
-        let _ = w.unminimize();
-        let _ = w.show();
-        let _ = w.set_focus();
+        if focus {
+            let _ = w.unminimize();
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
         return Ok(());
     }
     WebviewWindowBuilder::new(app, FILES, WebviewUrl::App("index.html".into()))
         .title("amux 파일 보기")
         .inner_size(1280.0, 820.0)
         .min_inner_size(480.0, 320.0)
+        .focused(focus)
         .build()
         .map(|_| ())
         .map_err(err)
 }
 
 /// Move a pane's files panel into the pop-out window (opening it) or back.
-/// The last panel going back closes the window.
+/// The last panel going back closes the window. `focus` (default true): bring
+/// the window to the front with the keyboard; false for an automatic move.
 #[tauri::command]
 pub async fn files_pop(
     app: AppHandle,
     pane: String,
     out: bool,
     look: Option<serde_json::Value>,
+    focus: Option<bool>,
 ) -> Result<PopoutState, String> {
     let state = app.state::<Popout>().set(&pane, out, look);
     if out {
-        if let Err(e) = open_or_focus(&app) {
+        if let Err(e) = open_or_focus(&app, focus.unwrap_or(true)) {
             // No window to show it in: the panel stays where it was. Logged
             // here, since the main window only shows it in its console.
             tracing::warn!("files pop-out window did not open: {e}");

@@ -65,7 +65,8 @@
   const popped = $derived(popout.panes.includes(pane));
   /** How handing the conversation between terminal and chat went. */
   const note = $derived(paneNotes.byPane[pane]);
-  /** Width of the main part (the whole pane, or 3 of 3:2 beside subagents). */
+  /** Width of the main part (the whole pane, or 3 of 3:2 beside subagents;
+   *  65 of 65:35 in the chat). */
   let rowWidth = $state(0);
   /** Too narrow for terminal and panel side by side: the panel goes over it. */
   const filesOver = $derived(rowWidth > 0 && rowWidth < 640);

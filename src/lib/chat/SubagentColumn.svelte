@@ -1,5 +1,6 @@
 <script lang="ts">
-  // The column on the right of a pane (2 of 3:2) with one card per subagent of
+  // The column on the right of a pane (2 of 3:2, 35 of 65:35 beside the chat)
+  // with one card per subagent of
   // the Claude on screen in it, stacked top to bottom. Always mounted, so its
   // look loop keeps running; it takes no room while it has no cards.
   import { onDestroy, untrack } from "svelte";
@@ -88,7 +89,7 @@
 </script>
 
 {#if agents.length}
-  <aside class="subcol" style="--sub-fs: {settings.fontSize}px" aria-label="서브에이전트">
+  <aside class="subcol" class:chat style="--sub-fs: {settings.fontSize}px" aria-label="서브에이전트">
     {#each agents as a (a.id)}
       <SubagentCard agent={a} {cwd} onclose={() => closeCard(pane, a.id)} />
     {/each}
@@ -96,7 +97,8 @@
 {/if}
 
 <style>
-  /* 2 of the pane's 3:2 split; the main part beside it takes the rest. */
+  /* 2 of the pane's 3:2 split beside the terminal; 35 of 65:35 beside the
+     chat, whose files go to the pop-out window. The main part takes the rest. */
   .subcol {
     flex: 0 0 40%;
     min-width: 0;
@@ -107,5 +109,8 @@
     overflow-y: auto;
     font-family: system-ui, sans-serif;
     font-size: var(--sub-fs, 14px);
+  }
+  .subcol.chat {
+    flex-basis: 35%;
   }
 </style>
